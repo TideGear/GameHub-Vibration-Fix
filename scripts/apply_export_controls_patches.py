@@ -4,7 +4,14 @@ VJoy on-screen-controls export/import to/from local files.
 
 Replaces GameHub's cloud-only "share-by-code" flow for on-screen controller
 layouts with portable local `.gtheme` files. No cloud account, no HTTP.
-Supports stock 6.0.4 only.
+Supports stock 6.0.7 only.
+
+The four bytecode hooks are URL-fragment-anchored (not R8-letter-anchored),
+so they re-discover their methods unchanged on 6.0.7 (the VJoy share repo
+moved Lrqn; -> Lkkm; but the script locates it by the vcontroller/* URL
+strings). Only the resolver dependency moved: the short-circuit installed by
+apply_menu_patches.py is now on Lok8;->c0 (was Lxd3;->l1), and the sibling
+resolver variants extended here are Lok8;->d0/J/K (was Lxd3;->m1/P0/Q0).
 
 Port of bannerhub-revanced's ExportControlsPatch + ExportControlsManifestPatch
 + ExportControlsResourcesPatch (commit ab43968) — translated from ReVanced
@@ -29,7 +36,7 @@ EXPORT
 IMPORT
 ------
   The "Import Layout" share-code dialog is skipped entirely: the shared
-  composition-time string resolver (Lxd3;->l1, hooked by
+  composition-time string resolver (Lok8;->c0, hooked by
   apply_menu_patches.py) detects the dialog title key and fires a SAF file
   picker (ACTION_OPEN_DOCUMENT) immediately — see
   BhMenuRowClick.maybeResolveCustomLabel, which calls
@@ -42,12 +49,11 @@ ANCHORING STRATEGY
 Unlike the sibling scripts, this one does NOT hardcode R8-mangled class
 letters. It locates the four hook sites by SERVER-STABLE URL fragments
 (`vcontroller/shareMap`, `/getMapByShareCode`, `/uploadGtheme`) and by the
-call-relationship between the share-name method and the upload method. The
-GH604 letter map (in bannerhub-revanced) documents the device-verified
-letters as of the patched-Normal APK (Lrqn;->i / ->d / ->j, Lnrn;->h), but
-those are NOT used here: the URL fragments survive R8 reshuffles, and the
-stock-APK dex numbering differs from the patched APK the letter map was cut
-against (the strings live in classes4.dex → smali_classes4/, not classes3).
+call-relationship between the share-name method and the upload method. On
+6.0.7 the VJoy share repo resolves to Lkkm; (was Lrqn; on 6.0.4) with i/d/j
+the share/apply/upload methods, but the script never hardcodes those: the
+URL fragments survive R8 reshuffles and the dex-collapse (6->5), so the same
+locator code finds the methods regardless of the regenerated letters.
 
 Register choices (p1 for share/upload, p3 for the name capture) are the same
 device-verified offsets the upstream Kotlin patch uses: the repo methods are
@@ -65,7 +71,7 @@ the other extension/ files):
   com.xj.winemu.exportcontrols.BhVjoyImporter
   com.xj.winemu.exportcontrols.BhVjoyJson
 
-Depends on apply_menu_patches.py having installed the Lxd3;->l1 resolver
+Depends on apply_menu_patches.py having installed the Lok8;->c0 resolver
 short-circuit (the import-dialog skip and all label relabels ride on it).
 """
 import base64
@@ -99,10 +105,12 @@ def die(msg):
 # Version detection (parity with the sibling scripts — 6.0.4 only).
 # ---------------------------------------------------------------------------
 
+# See apply_vibration_patches.py for why the 6.0.4 ab8/bg5 probe is unusable
+# on 6.0.7 (letters reused). Anchor on the renamed app class instead.
 VERSION_PROBES = {
-    "6.0.4": (
-        "smali_classes3/ab8.smali",
-        "smali_classes3/bg5.smali",
+    "6.0.7": (
+        "smali_classes3/com/xiaoji/egggame/AndroidApp.smali",
+        "smali_classes3/com/winemu/core/gamepad/GamepadServerManager.smali",
     ),
 }
 
@@ -272,10 +280,19 @@ def locate_url_anchors(files, specs):
 
 
 def locate_caller(files, callee_ref, label):
-    """Single pass. Find the unique Object-returning, 4-param method whose 2nd
-    declared param is a String and whose body invokes `callee_ref`
-    (LClass;->name). This is the share/export entry that builds the .gtheme
-    then uploads it — the only such caller of the upload method in the dex."""
+    """Single pass. Find the unique Object-returning method whose first
+    declared param is a wide `long` (the gameId) and whose second declared
+    param is a String (the typed profile name), and whose body invokes
+    `callee_ref` (LClass;->name). This is the share/export entry that builds
+    the .gtheme then uploads it.
+
+    The (long gameId, String name) shape — NOT the total param count — is the
+    device-verified invariant that pins this method AND justifies the p3
+    register for captureShareName (a wide long occupies p1+p2, so the String
+    name lands at p3). 6.0.4 had 4 declared params here; 6.0.7's Lflm;->j has
+    5 (J, String, Z, Lp8m;, Continuation) — the extra params trail the String,
+    so p3 still holds. The other caller of the upload method (a 1-param
+    coroutine SuspendLambda) is excluded by the param-shape requirement."""
     needle = callee_ref.encode("utf-8")
     hits = []
     for f in files:
@@ -290,11 +307,11 @@ def locate_caller(files, callee_ref, label):
                 continue
             params_str, ret = split_descriptor(header)
             params = parse_param_types(params_str)
-            if (ret == "Ljava/lang/Object;" and len(params) == 4
-                    and params[1] == "Ljava/lang/String;"):
+            if (ret == "Ljava/lang/Object;" and len(params) >= 2
+                    and params[0] == "J" and params[1] == "Ljava/lang/String;"):
                 hits.append(Anchor(f, cls, header, params, ret))
     _assert_unique(hits, label, f"invokes {callee_ref}, returns Object, "
-                                f"4 params, param[1]=String")
+                                f"param[0]=long gameId, param[1]=String name")
     return hits[0]
 
 
@@ -423,15 +440,15 @@ def patch_bytecode(root: Path) -> None:
         "captureShareName(Ljava/lang/String;)V\n"
     ), "share-name: captureShareName")
 
-    # --- Hooks 5-7: extend the Lxd3 resource-resolver short-circuit to the
+    # --- Hooks 5-7: extend the Lok8 resource-resolver short-circuit to the
     # non-Compose and format-args variants. apply_menu_patches.py installs the
-    # hook on Lxd3;->l1 (Compose stringResource, single key); but the host
-    # also fetches resource strings via three sibling methods, all taking the
-    # same Lell descriptor:
+    # hook on Lok8;->c0 (Compose stringResource, single key; 6.0.4 Lxd3;->l1);
+    # but the host also fetches resource strings via three sibling methods,
+    # all taking the same Ldwj; descriptor (6.0.4 Lell;):
     #
-    #   m1(Lell;[Ljava/lang/Object;Lv83;I)Ljava/lang/String;  Compose + args
-    #   P0(Lell;Lbi3;)Ljava/lang/Object;                       suspend
-    #   Q0(Lell;[Ljava/lang/Object;Lbi3;)Ljava/lang/Object;    suspend + args
+    #   d0(Ldwj;[Ljava/lang/Object;Leh3;I)Ljava/lang/String;  Compose + args (was m1)
+    #   J(Ldwj;Ljq3;)Ljava/lang/Object;                        suspend        (was P0)
+    #   K(Ldwj;[Ljava/lang/Object;Ljq3;)Ljava/lang/Object;     suspend + args (was Q0)
     #
     # The host's "Share failed: %1$s" toast (and other catch-site error
     # toasts) is fetched from a coroutine catch via Q0 — bypassing the l1
@@ -449,26 +466,26 @@ def patch_bytecode(root: Path) -> None:
 RESOLVER_HANDLER = "Lcom/xj/winemu/vibration/BhMenuRowClick;"
 
 EXTRA_RESOLVERS = (
-    (".method public static final m1(Lell;[Ljava/lang/Object;Lv83;I)Ljava/lang/String;",
+    (".method public static final d0(Ldwj;[Ljava/lang/Object;Leh3;I)Ljava/lang/String;",
      "bh_m1_fallthrough",
-     "xd3.m1 (Compose stringResource with format args)"),
-    (".method public static final P0(Lell;Lbi3;)Ljava/lang/Object;",
+     "ok8.d0 (Compose stringResource with format args; was xd3.m1)"),
+    (".method public static final J(Ldwj;Ljq3;)Ljava/lang/Object;",
      "bh_p0_fallthrough",
-     "xd3.P0 (suspend getString)"),
-    (".method public static final Q0(Lell;[Ljava/lang/Object;Lbi3;)Ljava/lang/Object;",
+     "ok8.J (suspend getString; was xd3.P0)"),
+    (".method public static final K(Ldwj;[Ljava/lang/Object;Ljq3;)Ljava/lang/Object;",
      "bh_q0_fallthrough",
-     "xd3.Q0 (suspend getString with format args)"),
+     "ok8.K (suspend getString with format args; was xd3.Q0)"),
 )
 
 
 def patch_extra_resolvers(root: Path) -> None:
-    p = root / "smali" / "xd3.smali"
+    p = root / "smali_classes3" / "ok8.smali"
     if not p.is_file():
-        die("smali/xd3.smali not found (apply_menu_patches.py must have run)")
+        die("smali_classes3/ok8.smali not found (apply_menu_patches.py must have run)")
     for header, label, what in EXTRA_RESOLVERS:
         body = (
             f"    # BH: short-circuit non-Compose/format-args resource lookups\n"
-            f"    # the same way Lxd3;->l1 is short-circuited by the menu patch.\n"
+            f"    # the same way Lok8;->c0 is short-circuited by the menu patch.\n"
             f"    invoke-static {{p0}}, {RESOLVER_HANDLER}->"
             f"maybeResolveCustomLabelNoKick(Ljava/lang/Object;)Ljava/lang/String;\n"
             f"    move-result-object v0\n"
@@ -476,7 +493,7 @@ def patch_extra_resolvers(root: Path) -> None:
             f"    return-object v0\n"
             f"    :{label}\n"
         )
-        anchor = Anchor(path=p, cls="Lxd3;", header=header, params=[], ret="")
+        anchor = Anchor(path=p, cls="Lok8;", header=header, params=[], ret="")
         inject_at_entry(anchor, body, what)
 
 

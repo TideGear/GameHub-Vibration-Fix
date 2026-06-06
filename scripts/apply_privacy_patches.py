@@ -1,7 +1,15 @@
 #!/usr/bin/env python3
 """
 Apply privacy patches to a decompiled GameHub apktool tree. Supports stock
-6.0.4 only.
+6.0.7 only.
+
+6.0.7 vs 6.0.4: R8 letters were fully regenerated, .line debug directives are
+stripped from app code (anchors are instruction-only), and the dex count
+dropped 6->5 so several classes moved smali_classesN dirs. Notable structural
+drift handled below: the heartbeat start+update lambdas were FUSED into one
+class (Lfeo;+Lheo; -> Lk3n;, one stub kills both); the app class was renamed
+(BaseAndroidApp -> com/xiaoji/egggame/AndroidApp, a() -> b()); the OTA URL is
+now assembled at runtime instead of a single literal.
 
 Port of the bannerhub-revanced privacy patch set, translated from ReVanced
 Kotlin/dexlib2 to apktool-tree text edits to fit this fork's Python+apktool
@@ -36,9 +44,11 @@ What this kills
     paths would.
 
   XiaoJi heartbeat / playtime tracker (bytecode stubs)
-    The 3 SuspendLambdas that POST to heartbeat/game/{start,update,end}
+    The SuspendLambdas that POST to heartbeat/game/{start,update,end}
     and the GET that reads heartbeat/game/getUserPlayTimeList are stubbed
-    to return Unit.INSTANCE / an empty wrapped list. UX trade-off: the
+    to return Unit.INSTANCE / an empty wrapped list. In 6.0.7 R8 fused the
+    start and update lambdas into a single class, so this is now 3 stubs
+    (start+update merged, end, playtime) not 4. UX trade-off: the
     in-app playtime UI renders empty. Steam's own playtime on your Steam
     profile is unaffected (Steam tracks playtime independently via the
     Steam client running inside Wine).
@@ -49,10 +59,14 @@ What this kills
     URL allocation, zero HTTP, zero radio wake.
 
   XiaoJi OTA URL (bytecode register overwrite)
-    Loads "http://127.0.0.1" into the same register immediately after the
-    const-string load of https://www.xiaoji.com/firmware/update/x1, so the
-    HTTP client fails with connection-refused. JieLi gamepad-firmware
-    native libs are also stripped from lib/*/.
+    In 6.0.7 the firmware-update URL is assembled at runtime
+    ("https://" + host + "/firmware/update/x1" via a String-concat helper)
+    rather than a single literal, and the host is branch-selected
+    (www.xiaoji.com / ota-test.xiaoji.com). We overwrite the assembled-URL
+    register with "http://127.0.0.1" right after the concat, so the HTTP
+    client fails with connection-refused regardless of which host branch
+    was taken. JieLi gamepad-firmware native libs are also stripped from
+    lib/*/.
 
 What this deliberately doesn't touch
 ------------------------------------
@@ -106,10 +120,12 @@ def write(path, content):
 # Version detection (shared probe shape with apply_vibration_patches.py)
 # ---------------------------------------------------------------------------
 
+# See apply_vibration_patches.py for why the 6.0.4 ab8/bg5 probe is unusable
+# on 6.0.7 (letters reused). Anchor on the renamed app class instead.
 VERSION_PROBES = {
-    "6.0.4": (
-        "smali_classes3/ab8.smali",
-        "smali_classes3/bg5.smali",
+    "6.0.7": (
+        "smali_classes3/com/xiaoji/egggame/AndroidApp.smali",
+        "smali_classes3/com/winemu/core/gamepad/GamepadServerManager.smali",
     ),
 }
 
@@ -346,187 +362,186 @@ UNIT_RETURN_PREPEND = (
     "\n"
 )
 
-# Synthetic Lyw5 success — 4-field data class (Z, Integer, String,
-# Throwable) + int default-mask. Constructor takes 6 args including the
-# implicit `this`, which exceeds the 5-register cap of invoke-direct
+# Synthetic Lvy5 success (6.0.4 Lyw5) — 4-field data class (Z, Integer,
+# String, Throwable) + int default-mask. Constructor takes 6 args including
+# the implicit `this`, which exceeds the 5-register cap of invoke-direct
 # (format 35c), so we use invoke-direct/range. (35c silently truncates
 # at assembly time without flagging an error in some baksmali builds —
-# bannerhub-revanced hit this exact pitfall on first attempt.)
-YW5_SUCCESS_PREPEND = (
+# bannerhub-revanced hit this exact pitfall on first attempt.) The 6.0.7
+# ctor signature is byte-for-byte identical to 6.0.4 Lyw5.
+VY5_SUCCESS_PREPEND = (
     "    # BH: privacy patch — early-return synthetic success before any\n"
     "    # URL string is allocated or HTTP client is touched.\n"
-    "    new-instance v0, Lyw5;\n"
+    "    new-instance v0, Lvy5;\n"
     "    const/4 v1, 0x1\n"
     "    const/4 v2, 0x0\n"
     "    const/4 v3, 0x0\n"
     "    const/4 v4, 0x0\n"
     "    const/4 v5, 0x0\n"
-    "    invoke-direct/range {v0 .. v5}, Lyw5;-><init>(ZLjava/lang/Integer;"
+    "    invoke-direct/range {v0 .. v5}, Lvy5;-><init>(ZLjava/lang/Integer;"
     "Ljava/lang/String;Ljava/lang/Throwable;I)V\n"
     "    return-object v0\n"
     "\n"
 )
 
-# Synthetic Lxnm — 2-field data class (I, Set). Caller does check-cast
-# Lxnm; on the result, so the concrete return type matters.
-XNM_EMPTY_PREPEND = (
+# Synthetic Lj0l (6.0.4 Lxnm) — 2-field data class (I, Set). Caller does
+# check-cast Lj0l; on the result, so the concrete return type matters. The
+# 6.0.7 ctor signature is identical to 6.0.4 Lxnm.
+J0L_EMPTY_PREPEND = (
     "    # BH: privacy patch — early-return empty perf-config snapshot.\n"
-    "    new-instance v0, Lxnm;\n"
+    "    new-instance v0, Lj0l;\n"
     "    const/4 v1, 0x0\n"
     "    new-instance v2, Ljava/util/LinkedHashSet;\n"
     "    invoke-direct {v2}, Ljava/util/LinkedHashSet;-><init>()V\n"
-    "    invoke-direct {v0, v1, v2}, Lxnm;-><init>(ILjava/util/LinkedHashSet;)V\n"
+    "    invoke-direct {v0, v1, v2}, Lj0l;-><init>(ILjava/util/LinkedHashSet;)V\n"
     "    return-object v0\n"
     "\n"
 )
 
-# Synthetic Ln55(empty ArrayList) — getUserPlayTimeList returns a sealed
-# wrapper around the playtime list. The UI iterator runs zero passes on
-# the empty list instead of crashing.
-N55_EMPTY_PREPEND = (
+# Synthetic Loa5(empty ArrayList) (6.0.4 Ln55) — getUserPlayTimeList returns
+# an Either.Right-style wrapper around the playtime list (super = the sealed
+# base Lpa5;, the caller check-casts to it). The UI iterator runs zero passes
+# on the empty list instead of crashing. ctor (Ljava/lang/Object;)V identical
+# to 6.0.4 Ln55.
+OA5_EMPTY_PREPEND = (
     "    # BH: privacy patch — return empty playtime list wrapper.\n"
     "    new-instance v0, Ljava/util/ArrayList;\n"
     "    invoke-direct {v0}, Ljava/util/ArrayList;-><init>()V\n"
-    "    new-instance v1, Ln55;\n"
-    "    invoke-direct {v1, v0}, Ln55;-><init>(Ljava/lang/Object;)V\n"
+    "    new-instance v1, Loa5;\n"
+    "    invoke-direct {v1, v0}, Loa5;-><init>(Ljava/lang/Object;)V\n"
     "    return-object v1\n"
     "\n"
 )
 
 
 def patch_heartbeat(root: Path) -> None:
-    """Stub the 3 heartbeat SuspendLambdas (start / update / end) +
-    getUserPlayTimeList. The string anchors (heartbeat/game/...) appear
-    nowhere else in the smali tree, so the file paths Lfeo/Lheo/Laeo are
-    locked to these methods by content even when R8 reshuffles letters in
-    a future base bump (the script will fail loudly at the anchor-match
-    step, not silently miss)."""
-    # feo.invokeSuspend — heartbeat/game/start
+    """Stub the heartbeat POST lambdas + getUserPlayTimeList. In 6.0.7 R8
+    FUSED the start and update lambdas into one class Lk3n; (a single
+    invokeSuspend dispatches both via a packed-switch on the synthetic
+    instance field a:I), so an index-0 Unit early-return on k3n.invokeSuspend
+    kills BOTH start and update. End is the separate lambda Lg3n;.
+    getUserPlayTimeList moved to Lcb7;->c(Lkq3;). The string anchors
+    (heartbeat/game/...) pinned each class even though R8 reshuffled the
+    letters and dex dirs; anchors are .line-free (6.0.7 strips them).
+
+    DELIBERATELY NOT STUBBED: Ln10 also contains the literal
+    "heartbeat/game/start", but it is a constant-provider lambda that merely
+    RETURNS the URL/key string (no HTTP); stubbing it would corrupt unrelated
+    URL/serializer resolution app-wide."""
+    # k3n.invokeSuspend — heartbeat/game/start AND heartbeat/game/update
+    # (merged). The Unit early-return short-circuits the packed-switch before
+    # either branch's POST helper (Lzua;->e) runs.
     patch(
-        root / "smali_classes4/feo.smali",
+        root / "smali_classes3/k3n.smali",
         ".method public final invokeSuspend(Ljava/lang/Object;)Ljava/lang/Object;\n"
         "    .locals 9\n"
         "\n"
-        "    .line 1\n"
-        "    iget-object v0, p0, Lfeo;->L$0:Ljava/lang/Object;\n",
+        "    iget v0, p0, Lk3n;->a:I\n",
         ".method public final invokeSuspend(Ljava/lang/Object;)Ljava/lang/Object;\n"
         "    .locals 9\n"
         "\n"
         + UNIT_RETURN_PREPEND
-        + "    .line 1\n"
-        "    iget-object v0, p0, Lfeo;->L$0:Ljava/lang/Object;\n",
-        "feo.invokeSuspend: stub heartbeat/game/start",
+        + "    iget v0, p0, Lk3n;->a:I\n",
+        "k3n.invokeSuspend: stub heartbeat/game/start + heartbeat/game/update",
     )
-    # heo.invokeSuspend — heartbeat/game/update (the 30s tick)
+    # g3n.invokeSuspend — heartbeat/game/end
     patch(
-        root / "smali_classes4/heo.smali",
+        root / "smali_classes3/g3n.smali",
         ".method public final invokeSuspend(Ljava/lang/Object;)Ljava/lang/Object;\n"
-        "    .locals 7\n"
+        "    .locals 8\n"
         "\n"
-        "    .line 1\n"
-        "    iget-object v0, p0, Lheo;->L$0:Ljava/lang/Object;\n",
+        "    iget v0, p0, Lg3n;->a:I\n",
         ".method public final invokeSuspend(Ljava/lang/Object;)Ljava/lang/Object;\n"
-        "    .locals 7\n"
+        "    .locals 8\n"
         "\n"
         + UNIT_RETURN_PREPEND
-        + "    .line 1\n"
-        "    iget-object v0, p0, Lheo;->L$0:Ljava/lang/Object;\n",
-        "heo.invokeSuspend: stub heartbeat/game/update",
+        + "    iget v0, p0, Lg3n;->a:I\n",
+        "g3n.invokeSuspend: stub heartbeat/game/end",
     )
-    # aeo.invokeSuspend — heartbeat/game/end
+    # cb7.c — getUserPlayTimeList. Returns Loa5(emptyList) so the UI
+    # iterator runs zero passes instead of crashing (the caller check-casts
+    # the result to the sealed base Lpa5;, so Unit would ClassCastException).
     patch(
-        root / "smali_classes4/aeo.smali",
-        ".method public final invokeSuspend(Ljava/lang/Object;)Ljava/lang/Object;\n"
-        "    .locals 5\n"
-        "\n"
-        "    .line 1\n"
-        "    iget v0, p0, Laeo;->label:I\n",
-        ".method public final invokeSuspend(Ljava/lang/Object;)Ljava/lang/Object;\n"
-        "    .locals 5\n"
-        "\n"
-        + UNIT_RETURN_PREPEND
-        + "    .line 1\n"
-        "    iget v0, p0, Laeo;->label:I\n",
-        "aeo.invokeSuspend: stub heartbeat/game/end",
-    )
-    # se7.c — getUserPlayTimeList. Returns Ln55(emptyList) so the UI
-    # iterator runs zero passes instead of crashing.
-    patch(
-        root / "smali_classes4/se7.smali",
-        ".method public final c(Lci3;)Ljava/lang/Object;\n"
+        root / "smali_classes4/cb7.smali",
+        ".method public final c(Lkq3;)Ljava/lang/Object;\n"
         "    .locals 17\n"
         "\n"
-        "    .line 1\n"
         "    move-object/from16 v0, p0\n",
-        ".method public final c(Lci3;)Ljava/lang/Object;\n"
+        ".method public final c(Lkq3;)Ljava/lang/Object;\n"
         "    .locals 17\n"
         "\n"
-        + N55_EMPTY_PREPEND
-        + "    .line 1\n"
-        "    move-object/from16 v0, p0\n",
-        "se7.c: stub heartbeat/game/getUserPlayTimeList",
+        + OA5_EMPTY_PREPEND
+        + "    move-object/from16 v0, p0\n",
+        "cb7.c: stub heartbeat/game/getUserPlayTimeList",
     )
 
 
 def patch_analytics_events(root: Path) -> None:
-    """Stub Lcx5;->a (general /events POST) and Loh4;->b (perf-config
-    POST). Both anchor on .locals + the unique first instruction pattern;
-    on a future base bump the class letters reshuffle but the URL strings
-    and signature shapes do not, so failure surfaces loudly."""
-    # cx5.a — /events. Caller does check-cast Lyw5; on the result.
+    """Stub Lzy5;->a (general /events POST, 6.0.4 Lcx5;) and Lxn4;->b
+    (perf-config POST, 6.0.4 Loh4;). Both anchor on the method header +
+    .locals + the first instruction (move-object/from16 v0, p0); on a base
+    bump the class letters reshuffle but the URL strings and signature
+    shapes do not, so failure surfaces loudly. Continuation Lci3; -> Lkq3;
+    in 6.0.7; anchors are .line-free."""
+    # zy5.a — /events. Caller does check-cast Lvy5; (6.0.4 Lyw5) on the
+    # result, so we early-return a synthetic success of that type.
     patch(
-        root / "smali_classes4/cx5.smali",
-        ".method public final a(Ljava/util/Collection;Lci3;)Ljava/lang/Object;\n"
+        root / "smali_classes3/zy5.smali",
+        ".method public final a(Ljava/util/Collection;Lkq3;)Ljava/lang/Object;\n"
         "    .locals 27\n"
         "\n"
-        "    .line 1\n"
         "    move-object/from16 v0, p0\n",
-        ".method public final a(Ljava/util/Collection;Lci3;)Ljava/lang/Object;\n"
+        ".method public final a(Ljava/util/Collection;Lkq3;)Ljava/lang/Object;\n"
         "    .locals 27\n"
         "\n"
-        + YW5_SUCCESS_PREPEND
-        + "    .line 1\n"
-        "    move-object/from16 v0, p0\n",
-        "cx5.a: stub statistic-gamehub-api/events",
+        + VY5_SUCCESS_PREPEND
+        + "    move-object/from16 v0, p0\n",
+        "zy5.a: stub statistic-gamehub-api/events",
     )
-    # oh4.b — /events/device-performance-config. The URL string itself
-    # lives in the lambda body Lnh4;->invokeSuspend, but stubbing here at
-    # the outer public method is safer: callers do check-cast Lxnm; on
-    # the result, so we must return a concrete Lxnm. Returning Unit
-    # deeper would unwind through the runCatching frame and back to
-    # oh4.b which would build a Lxnm from a Unit and crash.
+    # xn4.b — /events/device-performance-config. The URL string itself lives
+    # in the perf-config lambda body (Lb34;), but stubbing here at the outer
+    # public method is safer: callers do check-cast Lj0l; (6.0.4 Lxnm) on the
+    # result, so we must return a concrete Lj0l;. xn4.b is the outer retry
+    # loop that delegates the real POST to xn4.c; returning a synthetic Lj0l;
+    # short-circuits before xn4.c is reached.
     patch(
-        root / "smali_classes4/oh4.smali",
-        ".method public final b(IJLci3;)Ljava/lang/Object;\n"
-        "    .locals 19\n"
+        root / "smali_classes3/xn4.smali",
+        ".method public final b(IJLkq3;)Ljava/lang/Object;\n"
+        "    .locals 21\n"
         "\n"
-        "    .line 1\n"
         "    move-object/from16 v0, p0\n",
-        ".method public final b(IJLci3;)Ljava/lang/Object;\n"
-        "    .locals 19\n"
+        ".method public final b(IJLkq3;)Ljava/lang/Object;\n"
+        "    .locals 21\n"
         "\n"
-        + XNM_EMPTY_PREPEND
-        + "    .line 1\n"
-        "    move-object/from16 v0, p0\n",
-        "oh4.b: stub statistic-gamehub-api/events/device-performance-config",
+        + J0L_EMPTY_PREPEND
+        + "    move-object/from16 v0, p0\n",
+        "xn4.b: stub statistic-gamehub-api/events/device-performance-config",
     )
 
 
 def patch_ota_url(root: Path) -> None:
-    """Inject a register-overwrite immediately after the OTA URL const-
-    string load, so the HTTP client sees http://127.0.0.1 instead and
-    fails with connection-refused. Leaves the original instruction in
-    place to preserve the surrounding try/catch label structure and the
-    original .line debug info."""
+    """Overwrite the assembled OTA firmware-update URL with loopback so the
+    HTTP client fails with connection-refused. In 6.0.7 the URL is no longer
+    a single literal: Lto4;->d assembles it via
+    Lxq2;->r("https://", host, "/firmware/update/x1") where host is branch-
+    selected (www.xiaoji.com / ota-test.xiaoji.com). We overwrite the
+    move-result-object register that holds the FINAL assembled URL (p2),
+    which catches both host branches with one injection and mirrors the
+    6.0.4 'overwrite the URL register' semantics. The Lxq2;->r concat call
+    is unique within the file, so the anchor is unambiguous; it is .line-free."""
     patch(
-        root / "smali_classes4/ki4.smali",
-        '    const-string v2, "https://www.xiaoji.com/firmware/update/x1"\n',
-        '    const-string v2, "https://www.xiaoji.com/firmware/update/x1"\n'
+        root / "smali_classes3/to4.smali",
+        '    invoke-static {v1, p2, v8}, Lxq2;->r(Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;)Ljava/lang/String;\n'
         '\n'
-        '    # BH: privacy patch — overwrite OTA URL with loopback so the\n'
-        '    # firmware-update phone-home fails with connection-refused.\n'
-        '    const-string v2, "http://127.0.0.1"\n',
-        'ki4: overwrite OTA URL register with http://127.0.0.1',
+        '    move-result-object p2\n',
+        '    invoke-static {v1, p2, v8}, Lxq2;->r(Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;)Ljava/lang/String;\n'
+        '\n'
+        '    move-result-object p2\n'
+        '\n'
+        '    # BH: privacy patch — overwrite the assembled OTA URL with loopback\n'
+        '    # so the firmware-update phone-home fails with connection-refused.\n'
+        '    const-string p2, "http://127.0.0.1"\n',
+        'to4.d: overwrite assembled OTA URL register with http://127.0.0.1',
     )
 
 
@@ -543,81 +558,72 @@ def patch_mob_bytecode(root: Path) -> None:
     either no-op or throw an NPE that the existing try/catchall around
     restartPush already catches — surgically removing them would break
     the try-label structure."""
-    # BaseAndroidApp.a() — first policy-grant invoke (line ~29 in 6.0.4).
+    # AndroidApp.b() — first policy-grant invoke (6.0.4 BaseAndroidApp.a()).
     # The const/4 v2, 0x1 setting up the call's arg stays — it's used by
-    # later code in the method too.
+    # later code in the method too. Anchor on the unique Lcom/mob/MobSDK;->init
+    # call immediately above (one init in the file); .line-free in 6.0.7.
     patch(
-        root / "smali/com/xiaoji/egggame/BaseAndroidApp.smali",
+        root / "smali_classes3/com/xiaoji/egggame/AndroidApp.smali",
+        "    invoke-static {p0}, Lcom/mob/MobSDK;->init(Landroid/content/Context;)V\n"
+        "\n"
         "    const/4 v2, 0x1\n"
         "\n"
-        "    .line 7\n"
         "    invoke-static {v2}, Lcom/mob/MobSDK;->submitPolicyGrantResult(Z)V\n"
         "\n"
-        "    .line 8\n"
-        "    .line 9\n"
-        "    .line 10\n"
-        "    sget-boolean v3, Lnt5;->e:Z\n",
+        "    sget-boolean v3, Lns8;->d:Z\n",
+        "    invoke-static {p0}, Lcom/mob/MobSDK;->init(Landroid/content/Context;)V\n"
+        "\n"
         "    const/4 v2, 0x1\n"
         "\n"
-        "    .line 7\n"
         "    # BH: privacy patch — Mob policy-grant invoke removed.\n"
         "\n"
-        "    .line 8\n"
-        "    .line 9\n"
-        "    .line 10\n"
-        "    sget-boolean v3, Lnt5;->e:Z\n",
-        "BaseAndroidApp.a: strip MobSDK.submitPolicyGrantResult",
+        "    sget-boolean v3, Lns8;->d:Z\n",
+        "AndroidApp.b: strip MobSDK.submitPolicyGrantResult",
     )
 
-    # BaseAndroidApp.a() — addPushReceiverInMain invoke inside try block.
-    # Void-returning, no move-result, safe to remove without renumbering
-    # the try-catch labels.
+    # AndroidApp.b() — addPushReceiverInMain invoke, interior to a
+    # :try_start_0 .. :try_end_0/:catchall_0 block. Void-returning, no
+    # move-result, and strictly interior (the try-boundary labels are not
+    # adjacent), so removal is label-safe.
     patch(
-        root / "smali/com/xiaoji/egggame/BaseAndroidApp.smali",
-        "    .line 110\n"
+        root / "smali_classes3/com/xiaoji/egggame/AndroidApp.smali",
+        "    move-result-object p0\n"
+        "\n"
         "    invoke-static {p0, v1}, Lcom/mob/pushsdk/MobPush;->"
         "addPushReceiverInMain(Landroid/content/Context;"
         "Lcom/mob/pushsdk/MobPushReceiver;)V\n"
         "\n"
-        "    .line 111\n"
-        "    .line 112\n"
-        "    .line 113\n"
-        "    sput-boolean v2, Lli0;->b:Z\n",
-        "    .line 110\n"
+        "    sput-boolean v2, Lqk0;->b:Z\n",
+        "    move-result-object p0\n"
+        "\n"
         "    # BH: privacy patch — Mob addPushReceiverInMain invoke removed.\n"
         "\n"
-        "    .line 111\n"
-        "    .line 112\n"
-        "    .line 113\n"
-        "    sput-boolean v2, Lli0;->b:Z\n",
-        "BaseAndroidApp.a: strip MobPush.addPushReceiverInMain",
+        "    sput-boolean v2, Lqk0;->b:Z\n",
+        "AndroidApp.b: strip MobPush.addPushReceiverInMain",
     )
 
-    # nt5.N(Context)V — second policy-grant invoke. Same shape as the
-    # first one but lives in a different bootstrap method (the obfuscated
-    # config class's N method, which R8 may rename across base bumps —
-    # script will fail loudly at this anchor if the helper moved).
+    # ns8.D(Context)V — second policy-grant invoke (6.0.4 nt5.N(Context)V).
+    # Anchor on the submitPolicyGrantResult/setClickNotification pair (the
+    # combination is unique to D() within ns8.smali), in a non-try branch
+    # after :cond_5, so removal is label-safe. The const/4 v2, 0x0 feeds the
+    # setClickNotification call and stays.
     patch(
-        root / "smali_classes4/nt5.smali",
+        root / "smali_classes4/ns8.smali",
         "    const/4 p0, 0x1\n"
         "\n"
-        "    .line 66\n"
         "    invoke-static {p0}, Lcom/mob/MobSDK;->submitPolicyGrantResult(Z)V\n"
         "\n"
-        "    .line 67\n"
-        "    .line 68\n"
-        "    .line 69\n"
-        "    const/4 v2, 0x0\n",
+        "    const/4 v2, 0x0\n"
+        "\n"
+        "    invoke-static {v2}, Lcom/mob/pushsdk/MobPush;->setClickNotificationToLaunchMainActivity(Z)V\n",
         "    const/4 p0, 0x1\n"
         "\n"
-        "    .line 66\n"
         "    # BH: privacy patch — Mob policy-grant invoke removed.\n"
         "\n"
-        "    .line 67\n"
-        "    .line 68\n"
-        "    .line 69\n"
-        "    const/4 v2, 0x0\n",
-        "nt5.N: strip MobSDK.submitPolicyGrantResult",
+        "    const/4 v2, 0x0\n"
+        "\n"
+        "    invoke-static {v2}, Lcom/mob/pushsdk/MobPush;->setClickNotificationToLaunchMainActivity(Z)V\n",
+        "ns8.D: strip MobSDK.submitPolicyGrantResult",
     )
 
 

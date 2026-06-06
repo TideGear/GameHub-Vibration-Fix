@@ -32,15 +32,19 @@ import java.util.concurrent.TimeUnit;
  *
  * Reflection anchors (R8-renamed; these letters need re-derivation on
  * each GameHub minor bump):
- *   - {@link #SAVE_HELPER_CLASS}  = "o0n"     — has static `i(...)`
- *   - {@link #WITH_CONTEXT_CLASS} = "w0o"     — has static `s0(...)`
- *   - {@link #DISPATCHER_HOLDER}  = "f80"     — static field `a:Ll14;`
- *                                              is Dispatchers.IO
- *   - {@link #SAVE_BLOCK_CLASS}   = "m0n"     — the save-coroutine state
+ *   - {@link #WITH_CONTEXT_CLASS} = "aig"     — has static `V(...)` =
+ *                                              withContext (6.0.4 w0o.s0;
+ *                                              the bgl.i/o0n.i wrapper is
+ *                                              bypassed, see saveLayoutLocal)
+ *   - {@link #DISPATCHER_HOLDER}  = "n80"     — static field `a:Li84;`
+ *                                              is Dispatchers.IO (6.0.4 f80)
+ *   - {@link #SAVE_BLOCK_CLASS}   = "agl"     — the save-coroutine state
  *                                              class; ctor takes
- *                                              (String, VJoyLayout, Lbi3;)
- *   - {@link #CONTINUATION_INTERFACE} = "bi3" — the R8-renamed
+ *                                              (String, VJoyLayout, Ljq3;)
+ *                                              (6.0.4 m0n)
+ *   - {@link #CONTINUATION_INTERFACE} = "jq3" — the R8-renamed
  *                                              kotlin.coroutines.Continuation
+ *                                              (6.0.4 bi3)
  *
  * All paths fail-soft: on any reflection / parse / save error we log and
  * return null. The caller (BhVjoyShareHook#interceptApply) toasts a
@@ -50,13 +54,17 @@ public final class BhVjoyImporter {
 
     private static final String TAG = "BhVjoyImporter";
 
-    // === R8-mangled anchors (6.0.4 / branch feature/vjoy-export-import) ===
-    private static final String WITH_CONTEXT_CLASS    = "w0o";  // BuildersKt (has s0 = withContext)
-    private static final String DISPATCHER_HOLDER     = "f80";  // Dispatchers (has a = IO)
-    private static final String COROUTINE_CONTEXT_IF  = "dm3";  // CoroutineContext interface (first arg type)
-    private static final String FUNCTION2_IF          = "dx6";  // Function2 interface (block param)
-    private static final String CONTINUATION_INTERFACE = "bi3"; // Continuation interface (completion param)
-    private static final String SAVE_BLOCK_CLASS      = "m0n";  // suspend lambda; ctor takes (String, VJoyLayout, Continuation)
+    // === R8-mangled anchors (GameHub 6.0.7; 6.0.4 letters in parens) ===
+    private static final String WITH_CONTEXT_CLASS    = "aig";  // BuildersKt (has V = withContext; 6.0.4 w0o.s0)
+    private static final String WITH_CONTEXT_METHOD   = "V";    // withContext method name (6.0.4 "s0")
+    private static final String DISPATCHER_HOLDER     = "n80";  // Dispatchers (has a = IO; 6.0.4 f80)
+    private static final String COROUTINE_CONTEXT_IF  = "st3";  // CoroutineContext interface, first arg type (6.0.4 dm3)
+    private static final String FUNCTION2_IF          = "uv6";  // Function2 interface, block param (6.0.4 dx6)
+    // Continuation INTERFACE (getContext()+resumeWith) — what the Proxy must
+    // implement. 6.0.4 bi3. NB: NOT kq3 (that is ContinuationImpl, the
+    // abstract class, = 6.0.4 ci3 — a Proxy can't implement it).
+    private static final String CONTINUATION_INTERFACE = "jq3";
+    private static final String SAVE_BLOCK_CLASS      = "agl";  // suspend lambda; ctor (String, VJoyLayout, Continuation) (6.0.4 m0n)
     private static final String VJOY_LAYOUT_FQN =
         "com.xiaoji.egggame.common.ui.vjoy.model.VJoyLayout";
 
@@ -494,37 +502,38 @@ public final class BhVjoyImporter {
     /**
      * Invoke the host's coroutine-builder withContext (kotlinx-coroutines
      * `BuildersKt.withContext(CoroutineContext, Function2, Continuation)`)
-     * with the save coroutine block ({@code Lm0n;}) directly. Bypasses
-     * the {@code Lo0n;->i} static wrapper because its declared third-arg
-     * type is the abstract {@code Lci3;} class — Java reflection can't
-     * accept our {@code Lbi3;} Proxy as that type even though it would
-     * work at JVM bytecode level. {@code Lw0o;->s0} accepts the {@code Lbi3;}
-     * interface directly, which our Proxy satisfies.
+     * with the save coroutine block ({@code Lagl;}, 6.0.4 {@code Lm0n;})
+     * directly. Bypasses the {@code Lbgl;->i} static wrapper (6.0.4
+     * {@code Lo0n;->i}) because its declared third-arg type is the abstract
+     * {@code Lkq3;} class (6.0.4 {@code Lci3;}) — Java reflection can't accept
+     * our {@code Ljq3;} Proxy as that type even though it would work at JVM
+     * bytecode level. {@code Laig;->V} (6.0.4 {@code Lw0o;->s0}) accepts the
+     * {@code Ljq3;} interface directly, which our Proxy satisfies.
      *
-     * Call shape (from o0n.i smali):
-     *   sget-object v0, Lf80;->a:Ll14;     ; Dispatchers.IO
-     *   new-instance v1, Lm0n;
+     * Call shape (from bgl.i smali):
+     *   sget-object v0, Ln80;->a:Li84;     ; Dispatchers.IO
+     *   new-instance v1, Lagl;
      *   const/4 v2, 0x0
-     *   invoke-direct {v1, layoutId, layout, null}, Lm0n;-><init>(String, VJoyLayout, Lbi3;)V
-     *   invoke-static {v0, v1, ourContinuation}, Lw0o;->s0(Ldm3;Ldx6;Lbi3;)Ljava/lang/Object;
+     *   invoke-direct {v1, layoutId, layout, null}, Lagl;-><init>(String, VJoyLayout, Ljq3;)V
+     *   invoke-static {v0, v1, ourContinuation}, Laig;->V(Lst3;Luv6;Ljq3;)Ljava/lang/Object;
      */
     private static Object saveLayoutLocal(String layoutId, Object vJoyLayout)
             throws Exception {
         Class<?> vJoyLayoutCls = Class.forName(VJOY_LAYOUT_FQN);
-        Class<?> continuationCls = Class.forName(CONTINUATION_INTERFACE);     // bi3
-        Class<?> coroutineCtxCls = Class.forName(COROUTINE_CONTEXT_IF);       // dm3
-        Class<?> function2Cls = Class.forName(FUNCTION2_IF);                  // dx6
-        Class<?> withContextCls = Class.forName(WITH_CONTEXT_CLASS);          // w0o
-        Class<?> dispatchersCls = Class.forName(DISPATCHER_HOLDER);           // f80
-        Class<?> saveBlockCls = Class.forName(SAVE_BLOCK_CLASS);              // m0n
+        Class<?> continuationCls = Class.forName(CONTINUATION_INTERFACE);     // jq3 (6.0.4 bi3)
+        Class<?> coroutineCtxCls = Class.forName(COROUTINE_CONTEXT_IF);       // st3 (6.0.4 dm3)
+        Class<?> function2Cls = Class.forName(FUNCTION2_IF);                  // uv6 (6.0.4 dx6)
+        Class<?> withContextCls = Class.forName(WITH_CONTEXT_CLASS);          // aig (6.0.4 w0o)
+        Class<?> dispatchersCls = Class.forName(DISPATCHER_HOLDER);           // n80 (6.0.4 f80)
+        Class<?> saveBlockCls = Class.forName(SAVE_BLOCK_CLASS);              // agl (6.0.4 m0n)
 
-        // 1. Pull Dispatchers.IO singleton from f80.a.
+        // 1. Pull Dispatchers.IO singleton from n80.a.
         Field dispatcherField = dispatchersCls.getDeclaredField("a");
         dispatcherField.setAccessible(true);
         Object dispatcher = dispatcherField.get(null);
-        if (dispatcher == null) throw new IllegalStateException("f80.a is null");
+        if (dispatcher == null) throw new IllegalStateException("n80.a is null");
 
-        // 2. Construct the save coroutine block. ctor: (String, VJoyLayout, Lbi3;)
+        // 2. Construct the save coroutine block. ctor: (String, VJoyLayout, Ljq3;)
         Constructor<?> blockCtor = saveBlockCls.getDeclaredConstructor(
             String.class, vJoyLayoutCls, continuationCls);
         blockCtor.setAccessible(true);
@@ -534,9 +543,9 @@ public final class BhVjoyImporter {
         CompletableFuture<Object> done = new CompletableFuture<>();
         Object continuation = makeContinuation(continuationCls, done, dispatcher);
 
-        // 4. Find w0o.s0(Ldm3;Ldx6;Lbi3;)Object — withContext.
+        // 4. Find aig.V(Lst3;Luv6;Ljq3;)Object — withContext (6.0.4 w0o.s0).
         Method withContext = withContextCls.getDeclaredMethod(
-            "s0", coroutineCtxCls, function2Cls, continuationCls);
+            WITH_CONTEXT_METHOD, coroutineCtxCls, function2Cls, continuationCls);
         withContext.setAccessible(true);
 
         Object immediate = withContext.invoke(null, dispatcher, saveBlock, continuation);
