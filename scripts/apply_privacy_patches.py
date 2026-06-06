@@ -356,8 +356,13 @@ def strip_native_libs(root: Path) -> None:
 # from the entry point only). Every heartbeat invokeSuspend has .locals >= 5,
 # so v0 is always safe to reuse.
 UNIT_RETURN_PREPEND = (
-    "    # BH: privacy patch — short-circuit heartbeat lambda\n"
-    "    sget-object v0, Lkotlin/Unit;->INSTANCE:Lkotlin/Unit;\n"
+    "    # BH: privacy patch — short-circuit heartbeat lambda. Return the\n"
+    "    # host's kotlin.Unit singleton: R8 renamed kotlin.Unit to Lyxk; on\n"
+    "    # 6.0.7 (its INSTANCE field is Lyxk;->a:Lyxk;), so a literal\n"
+    "    # Lkotlin/Unit;->INSTANCE does NOT resolve at runtime and throws\n"
+    "    # NoClassDefFoundError. The original invokeSuspend returns this same\n"
+    "    # Lyxk;->a on its normal completion path.\n"
+    "    sget-object v0, Lyxk;->a:Lyxk;\n"
     "    return-object v0\n"
     "\n"
 )

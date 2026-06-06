@@ -51,9 +51,14 @@ public final class BhMenuRowClick {
         Object u = UNIT;
         if (u != null) return u;
         try {
-            Class<?> c = Class.forName("kotlin.Unit");
-            Field f = c.getField("INSTANCE");
-            u = f.get(null);
+            try {
+                Class<?> c = Class.forName("kotlin.Unit");
+                u = c.getField("INSTANCE").get(null);
+            } catch (Throwable keptNameMissing) {
+                // 6.0.7: R8 obfuscated kotlin.Unit -> Lyxk; (INSTANCE = a).
+                Class<?> c = Class.forName("yxk");
+                u = c.getDeclaredField("a").get(null);
+            }
             UNIT = u;
             return u;
         } catch (Throwable t) {
@@ -144,23 +149,25 @@ public final class BhMenuRowClick {
             Class<?> o05Cls = Class.forName("n55");
             Class<?> pw6Cls = Class.forName("gv6");
 
-            // Resolve a gear/settings icon. Lv45 (6.0.4 Lzz4) is the
-            // ComposableSingletons class for menu-row icons; the `b0`
-            // field holds an Lu3k (6.0.4 Lxrl) Lazy wrapper whose
-            // getValue() returns an Ln55 (6.0.4 Lo05; Painter/vector ref).
-            // NOTE: v45.b0 in 6.0.7 is a finger/gesture drawable, not a
-            // gear — cosmetic; repoint to another v45 icon field if needed.
+            // Resolve a menu-row icon. Lv45 (6.0.4 Lzz4) is the
+            // ComposableSingletons class for menu-row icons; field `x` holds
+            // an Lu3k (6.0.4 Lxrl) Lazy whose getValue() returns an Ln55
+            // (6.0.4 Lo05). We MUST use a field the host's own menu builders
+            // already render: Lc37;->a (this More Menu) and Ly7c;->f (tile
+            // popup) both use Lv45;->x. The earlier choice Lv45;->b0 is an
+            // icon for a DIFFERENT surface and crashed Compose when rendered
+            // here (NoClassDefFound/render fault in do8). x is verified-safe.
             Class<?> zz4Cls = Class.forName("v45");
-            Field iconHolderField = zz4Cls.getDeclaredField("b0");
+            Field iconHolderField = zz4Cls.getDeclaredField("x");
             iconHolderField.setAccessible(true);
             Object xrlWrapper = iconHolderField.get(null);
             if (xrlWrapper == null) {
-                Log.w(TAG, "zz4.b0 is null; cannot resolve icon");
+                Log.w(TAG, "v45.x is null; cannot resolve icon");
                 return;
             }
             Object iconValue = xrlWrapper.getClass().getMethod("getValue").invoke(xrlWrapper);
             if (!o05Cls.isInstance(iconValue)) {
-                Log.w(TAG, "zz4.b0.getValue() did not return Lo05");
+                Log.w(TAG, "v45.x.getValue() did not return Ln55");
                 return;
             }
 
@@ -222,7 +229,7 @@ public final class BhMenuRowClick {
             Class<?> nw6Cls = Class.forName("ev6");
             Class<?> zz4Cls = Class.forName("v45");
 
-            Field iconField = zz4Cls.getDeclaredField("b0");
+            Field iconField = zz4Cls.getDeclaredField("x");
             iconField.setAccessible(true);
             Object xrlWrapper = iconField.get(null);
             if (xrlWrapper == null) return safeReturnArrayList(original);
