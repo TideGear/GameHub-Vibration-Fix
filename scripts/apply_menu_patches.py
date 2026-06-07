@@ -71,6 +71,17 @@ from pathlib import Path
 # Patch primitive — same shape as apply_vibration_patches.py.
 # ---------------------------------------------------------------------------
 
+def _write_lf(path, content):
+    # newline="" disables newline translation so \n is written as LF on every
+    # platform. Critical for the .cvr bundles (LF-delimited with base64
+    # values): on Windows the default write_text() translates \n -> \r\n,
+    # leaving a stray \r after each base64 value that crashes the host's
+    # decoder ("prohibited after the pad character"). LF is also correct for
+    # smali/manifest, matching apktool's own output.
+    with open(path, "w", encoding="utf-8", newline="") as f:
+        f.write(content)
+
+
 def patch(path, old, new, label):
     p = Path(path)
     try:
@@ -80,7 +91,7 @@ def patch(path, old, new, label):
     if old not in content:
         print(f"ERROR: anchor not found in {path} for: {label}", file=sys.stderr)
         sys.exit(1)
-    p.write_text(content.replace(old, new, 1), encoding="utf-8")
+    _write_lf(p, content.replace(old, new, 1))
     print(f"OK: {label}")
 
 
@@ -93,7 +104,7 @@ def read(path):
 
 
 def write(path, content):
-    Path(path).write_text(content, encoding="utf-8")
+    _write_lf(path, content)
 
 
 # ---------------------------------------------------------------------------

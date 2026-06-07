@@ -55,7 +55,11 @@ def patch(path, old, new, label):
     if old not in content:
         print(f"ERROR: anchor not found in {path} for: {label}", file=sys.stderr)
         sys.exit(1)
-    p.write_text(content.replace(old, new, 1), encoding="utf-8")
+    # newline="" forces LF on every platform (Windows write_text() otherwise
+    # translates \n -> \r\n, which corrupts the LF-delimited .cvr bundles
+    # written by the sibling scripts; keep all patch output LF for parity).
+    with open(p, "w", encoding="utf-8", newline="") as f:
+        f.write(content.replace(old, new, 1))
     print(f"OK: {label}")
 
 

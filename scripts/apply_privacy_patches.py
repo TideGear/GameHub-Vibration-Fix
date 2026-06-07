@@ -100,7 +100,11 @@ def patch(path, old, new, label):
     if old not in content:
         print(f"ERROR: anchor not found in {path} for: {label}", file=sys.stderr)
         sys.exit(1)
-    p.write_text(content.replace(old, new, 1), encoding="utf-8")
+    # newline="" forces LF on every platform (Windows write_text() otherwise
+    # translates \n -> \r\n; harmless for smali but corrupts the LF-delimited
+    # .cvr base64 bundles, so keep all writes LF).
+    with open(p, "w", encoding="utf-8", newline="") as f:
+        f.write(content.replace(old, new, 1))
     print(f"OK: {label}")
 
 
@@ -113,7 +117,8 @@ def read(path):
 
 
 def write(path, content):
-    Path(path).write_text(content, encoding="utf-8")
+    with open(path, "w", encoding="utf-8", newline="") as f:
+        f.write(content)
 
 
 # ---------------------------------------------------------------------------

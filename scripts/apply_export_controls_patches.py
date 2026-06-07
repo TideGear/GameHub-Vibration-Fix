@@ -93,7 +93,13 @@ def read(path):
 
 
 def write(path, content):
-    Path(path).write_text(content, encoding="utf-8")
+    # newline="" forces LF on every platform. The .cvr bundles are
+    # LF-delimited with base64 values; on Windows the default write_text()
+    # translates \n -> \r\n, leaving a stray \r after each base64 value that
+    # crashes the host's decoder ("prohibited after the pad character"). LF is
+    # also correct for smali, matching apktool's output.
+    with open(path, "w", encoding="utf-8", newline="") as f:
+        f.write(content)
 
 
 def die(msg):
