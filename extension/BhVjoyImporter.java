@@ -68,6 +68,18 @@ public final class BhVjoyImporter {
     private static final String VJOY_LAYOUT_FQN =
         "com.xiaoji.egggame.common.ui.vjoy.model.VJoyLayout";
 
+    // Kept (non-obfuscated) host DB FQNs, used by the post-import Room
+    // invalidation nudge that restores the live My Layouts refresh on 6.0.7
+    // (see nudgeRoomInvalidation). These names are R8-keep-stable.
+    private static final String APP_DATABASE_CLS =
+        "com.xiaoji.egggame.core.database.AppDatabase";
+    private static final String VKL_DAO_CLS =
+        "com.xiaoji.egggame.core.database.dao.VirtualKeyLayoutDao";
+    private static final String VKL_ENTITY_CLS =
+        "com.xiaoji.egggame.core.database.entity.VirtualKeyLayoutEntity";
+    /** Koin's Java interop entrypoint: get(Class) resolves a single by Java type. */
+    private static final String KOIN_JAVA_COMPONENT = "org.koin.java.KoinJavaComponent";
+
     /** Save coroutine can take a while (file IO + index update). */
     private static final long SAVE_TIMEOUT_SECONDS = 30L;
 
@@ -171,6 +183,8 @@ public final class BhVjoyImporter {
     private static boolean registerInDatabase(
             String layoutId, Object layout, Object saveReceipt) {
         android.database.sqlite.SQLiteDatabase db = null;
+        long insertedRowId = -1;
+        String insertedUserId = null;
         try {
             // Resolve the on-disk DB path via the app's Context.
             android.content.Context ctx = currentApplicationContext();
@@ -256,13 +270,98 @@ public final class BhVjoyImporter {
             }
             Log.i(TAG, "registered layout in virtual_key_layout (row id=" +
                 rowId + ", folder_key=" + layoutId + ")");
-            return true;
+            insertedRowId = rowId;
+            insertedUserId = userId;
         } catch (Throwable t) {
             Log.w(TAG, "registerInDatabase failed", t);
             return false;
         } finally {
             if (db != null) try { db.close(); } catch (Throwable ignored) { }
         }
+        // Our raw write is committed and our second connection is closed.
+        // Route a real write through the host's own Room so its (2.7)
+        // connection-scoped invalidation tracker fires and the live My
+        // Layouts list refreshes immediately. 6.0.4's older Room observed our
+        // external raw write; 6.0.7's does not (the regression the user hit).
+        nudgeRoomInvalidation(insertedUserId, insertedRowId);
+        return true;
+    }
+
+    /**
+     * Make the host's Room invalidate the virtual_key_layout table so the
+     * live My Layouts list (a Room Flow on observeMyLayoutsRevision) re-emits
+     * right after an import — instead of only when the screen is re-entered.
+     *
+     * Mechanism: resolve the host's AppDatabase from Koin, read our
+     * just-inserted row back via the DAO's findById(user_id, id), and re-
+     * upsert it. That UPDATE goes through Room's own SQLiteConnection, so its
+     * 2.7 invalidation tracker fires (a 0-row no-op would NOT fire the table
+     * trigger, which is why we re-write a real row rather than poke a bogus
+     * id). All names used here are R8-keep-stable host FQNs; the suspend DAO
+     * calls reuse the same Continuation/await bridge as saveLayoutLocal.
+     *
+     * Best-effort: any failure just logs and leaves the prior behavior
+     * (layout still saved; visible after re-entering My Layouts).
+     */
+    private static void nudgeRoomInvalidation(String userId, long rowId) {
+        if (userId == null || userId.isEmpty() || rowId <= 0) return;
+        try {
+            Class<?> appDbCls = Class.forName(APP_DATABASE_CLS);
+            Object appDb = Class.forName(KOIN_JAVA_COMPONENT)
+                .getMethod("get", Class.class).invoke(null, appDbCls);
+            if (appDb == null) {
+                Log.w(TAG, "nudge: AppDatabase not resolvable from Koin");
+                return;
+            }
+            Object dao = appDbCls.getMethod("virtualKeyLayoutDao").invoke(appDb);
+            if (dao == null) { Log.w(TAG, "nudge: virtualKeyLayoutDao null"); return; }
+
+            Class<?> daoCls = Class.forName(VKL_DAO_CLS);
+            Class<?> entityCls = Class.forName(VKL_ENTITY_CLS);
+            Class<?> contCls = Class.forName(CONTINUATION_INTERFACE);
+            Object dispatcher = Class.forName(DISPATCHER_HOLDER)
+                .getDeclaredField("a").get(null);
+
+            // 1. findById(user_id, id) -> our row as a host Entity (no fragile
+            //    33-field construction; the Entity comes straight from the DB).
+            Method findById = daoCls.getMethod(
+                "findById", String.class, long.class, contCls);
+            Object entity = awaitSuspend(findById, dao, dispatcher, contCls,
+                new Object[]{ userId, rowId });
+            if (entity == null || !entityCls.isInstance(entity)) {
+                Log.w(TAG, "nudge: findById(" + userId + "," + rowId
+                    + ") returned no entity; skipping re-upsert");
+                return;
+            }
+            // 2. upsert(entity) -> UPDATE on virtual_key_layout via Room ->
+            //    invalidation tracker fires -> observeMyLayoutsRevision re-emits.
+            Method upsert = daoCls.getMethod("upsert", entityCls, contCls);
+            awaitSuspend(upsert, dao, dispatcher, contCls, new Object[]{ entity });
+            Log.i(TAG, "nudge: re-upserted row " + rowId
+                + " through Room (invalidation fired)");
+        } catch (Throwable t) {
+            Log.w(TAG, "nudgeRoomInvalidation failed (live refresh skipped)", t);
+        }
+    }
+
+    /**
+     * Invoke a Kotlin suspend method via reflection (its last parameter is the
+     * Continuation) and await the result. Mirrors saveLayoutLocal: pass a
+     * Continuation Proxy, and if the call returns COROUTINE_SUSPENDED, block
+     * on the CompletableFuture the Proxy completes in resumeWith.
+     */
+    private static Object awaitSuspend(Method m, Object target, Object dispatcher,
+            Class<?> contCls, Object[] leadingArgs) throws Exception {
+        CompletableFuture<Object> done = new CompletableFuture<>();
+        Object continuation = makeContinuation(contCls, done, dispatcher);
+        Object[] args = new Object[leadingArgs.length + 1];
+        System.arraycopy(leadingArgs, 0, args, 0, leadingArgs.length);
+        args[leadingArgs.length] = continuation;
+        Object immediate = m.invoke(target, args);
+        if (isCoroutineSuspended(immediate)) {
+            return done.get(SAVE_TIMEOUT_SECONDS, TimeUnit.SECONDS);
+        }
+        return immediate;
     }
 
     /**
