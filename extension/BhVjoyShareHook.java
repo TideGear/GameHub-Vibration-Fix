@@ -582,6 +582,27 @@ public final class BhVjoyShareHook {
     }
 
     /**
+     * Dismiss the host's "Name Profile" (prepare-share) dialog after a local
+     * export completes. On 6.0.4 the cloud-share abort dismissed it; on 6.0.7
+     * the redesigned share flow leaves it on screen (the cloud lookup errors
+     * before/independently of our SAF save, and the dialog isn't torn down).
+     * Called by BhSafProxyActivity after the export file is written. Runs on a
+     * short delay so BhSafProxyActivity has finished and the host activity (the
+     * one hosting the dialog) is resumed and topmost before we send BACK.
+     */
+    public static void dismissShareDialogAfterExport() {
+        new android.os.Handler(android.os.Looper.getMainLooper())
+            .postDelayed(() -> {
+                try {
+                    Activity host = resolveTopActivity();
+                    if (host != null) dismissTopDialog(host);
+                } catch (Throwable t) {
+                    Log.w(TAG, "dismissShareDialogAfterExport failed", t);
+                }
+            }, 350L);
+    }
+
+    /**
      * Programmatically dismiss the topmost Compose dialog. Two mechanisms
      * run back-to-back so whichever the dialog responds to wins:
      *

@@ -289,6 +289,11 @@ public final class BhSafProxyActivity extends Activity {
                 Toast.makeText(this, "Exported to " +
                     (displayName == null ? uri.toString() : displayName) +
                     " (" + bytes.length + " bytes)", Toast.LENGTH_LONG).show();
+                // 6.0.7: the host leaves the "Name Profile" dialog on screen
+                // after the (cloud) share aborts/errors. Dismiss it now that
+                // the local export succeeded.
+                com.xj.winemu.exportcontrols.BhVjoyShareHook
+                    .dismissShareDialogAfterExport();
             }
         } catch (Throwable t) {
             Log.w(TAG, "handleExportFromBytes failed", t);
