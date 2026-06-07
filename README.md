@@ -2,8 +2,8 @@
 
 The idea of GameScrub is to fix controller vibration, remove privacy
 issues, and still allow login to GameHub for the actually useful
-features like recommended per-game settings, sharing of on-screen
-control layouts, and library sync (so install/uninstall and library
+features like recommended per-game settings, default driver list,
+and library sync (so install/uninstall and library
 state across devices keep working).
 
 It is built on GameHub v6.x and heavily uses the work of
