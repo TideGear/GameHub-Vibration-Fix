@@ -414,23 +414,17 @@ public final class BhMenuRowClick {
             // share button now exports to a local .gtheme file, so relabel
             // the user-visible strings to match.
             //
-            // 6.0.7 CAVEAT: the VJoy share/import UI was redesigned into a new
-            // `features_vjoy_main2_*` resource namespace, so the 6.0.4 keys
-            // below (item_fun_share, dialog_prepare_share_*, dialog_import_
-            // share_code_*, main_toast_share_failed) NO LONGER EXIST in 6.0.7
-            // — these branches simply never match and fall through to the
-            // stock label (graceful no-op). The load-bearing export/import
-            // bytecode hooks (interceptShare/Upload/Apply on Lkkm;->i/j/d) are
-            // method-anchored and unaffected, and interceptApply on
-            // getMapByShareCode is the designed fallback that fires SAF when
-            // the dialog-skip below can't trigger. To restore the cosmetic
-            // relabels + dialog-skip, re-map these keys to their 6.0.7
-            // main2 equivalents once confirmed on-device.
-            else if ("string:features_vjoy_item_fun_share".equals(key)) {
+            // 6.0.7: the VJoy share/import strings moved from the
+            // `features_vjoy_*` namespace to the `common.vjoy` bundle with
+            // `common_vjoy_layout_*` keys (device-verified from the 6.0.7
+            // CVR). The keys below are the 6.0.7 names; the resource-id
+            // format is still "string:" + key (proven by the menu-row label
+            // working). Falls through to the stock label on any non-match.
+            else if ("string:common_vjoy_layout_func_share".equals(key)) {
                 label = "Export";                       // was "Share"
-            } else if ("string:features_vjoy_dialog_prepare_share_title".equals(key)) {
+            } else if ("string:common_vjoy_layout_dialog_prepare_share_title".equals(key)) {
                 label = "Name Profile";                 // was "Publish to Cloud"
-            } else if ("string:features_vjoy_dialog_prepare_share_placeholder".equals(key)) {
+            } else if ("string:common_vjoy_layout_dialog_prepare_share_placeholder".equals(key)) {
                 label = "Profile name";                 // was "Share name"
             }
             // NOTE: the post-export "Cloud Backup Code" dialog
@@ -443,7 +437,7 @@ public final class BhMenuRowClick {
             // picker and skip the share-code dialog entirely.
             else if ("string:features_vjoy_main_action_import".equals(key)) {
                 label = "Import Layout from File";  // was "Import Layout"
-            } else if ("string:features_vjoy_dialog_import_share_code_title".equals(key)) {
+            } else if ("string:common_vjoy_layout_dialog_import_share_code_title".equals(key)) {
                 label = "Import Layout";
                 // This resource ONLY resolves when the import dialog is being
                 // composed, so use it as the "dialog opening" signal and fire
@@ -458,16 +452,18 @@ public final class BhMenuRowClick {
                         Log.w(TAG, "kickImportFromDialogOpen threw", t);
                     }
                 }
-            } else if ("string:features_vjoy_dialog_import_share_code_placeholder".equals(key)) {
+            } else if ("string:common_vjoy_layout_dialog_import_share_code_placeholder".equals(key)) {
                 label = "Opening file picker…";
             }
-            // Suppress the host's "Share failed: %1$s" toast that fires after
-            // interceptShare throws. The stock format string interpolates our
-            // exception message ("Share failed: bh_export_local_only"), which
-            // is jarring noise on top of the success toast from
-            // BhSafProxyActivity. Overriding to "" makes String.format produce
-            // an empty string, and Android skips effectively-empty toasts.
-            else if ("string:features_vjoy_main_toast_share_failed".equals(key)) {
+            // Suppress the "Operation failed, please try again." toast that
+            // fires after interceptShare throws to abort the cloud publish.
+            // 6.0.7 dropped the share-specific failure string and shows this
+            // generic key instead; overriding to "" makes Android skip the
+            // (now empty) toast. NOTE: this key is generic to layout ops, so
+            // genuine non-share "operation failed" toasts are also swallowed
+            // — acceptable trade for a clean local-export UX, but revisit if
+            // it hides a real error elsewhere.
+            else if ("string:common_vjoy_layout_toast_operation_failed".equals(key)) {
                 label = "";
             }
 

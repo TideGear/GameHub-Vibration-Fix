@@ -150,6 +150,12 @@ public final class BhVjoyShareHook {
             }
             String absPath = resolveUploadFilePath(dto);
             if (absPath == null) {
+                // Fallback: the host just serialized the .gtheme to an
+                // app-private "vjoy_share" cache dir before uploading; grab
+                // the newest one. Robust to any upload-DTO restructuring.
+                absPath = findNewestGtheme(host);
+            }
+            if (absPath == null) {
                 Log.w(TAG, "interceptUpload: could not resolve local file path");
                 return null;
             }
@@ -204,14 +210,110 @@ public final class BhVjoyShareHook {
      */
     private static String resolveUploadFilePath(Object dto) {
         try {
-            Object pathObj = findFieldOfType(dto, "okio.Path", 4 /*depth*/,
+            // 1. okio.Path by type name — bases where okio is NOT obfuscated.
+            Object pathObj = findFieldOfType(dto, "okio.Path", 5 /*depth*/,
                 ".gtheme");
+            // 2. 6.0.7: okio is fully R8-obfuscated (no okio.Path class name
+            //    survives), so the type match above can never hit. Fall back
+            //    to a type-AGNOSTIC search for any reachable object whose
+            //    toString() is an absolute path ending in .gtheme —
+            //    okio.Path.toString() yields exactly that, regardless of the
+            //    obfuscated class name.
+            if (pathObj == null) {
+                pathObj = findPathByToString(dto, ".gtheme", 6 /*depth*/);
+            }
             if (pathObj == null) return null;
             return pathObj.toString();
         } catch (Throwable t) {
             Log.w(TAG, "resolveUploadFilePath failed", t);
             return null;
         }
+    }
+
+    /**
+     * Last-resort path resolution: scan app-private storage for the
+     * most-recently-modified {@code *.gtheme}. At the uploadGtheme hook the
+     * host has just serialized the layout to a {@code vjoy_share} cache dir,
+     * so the newest .gtheme is the one being uploaded. Robust to any
+     * upload-DTO obfuscation/restructuring (no reflection on the DTO at all).
+     */
+    private static String findNewestGtheme(Activity host) {
+        try {
+            java.util.ArrayList<java.io.File> roots = new java.util.ArrayList<>();
+            try { if (host.getCacheDir() != null) roots.add(host.getCacheDir()); } catch (Throwable ignored) { }
+            try { if (host.getFilesDir() != null) roots.add(host.getFilesDir()); } catch (Throwable ignored) { }
+            try { java.io.File ext = host.getExternalFilesDir(null); if (ext != null) roots.add(ext); } catch (Throwable ignored) { }
+            java.io.File best = null;
+            for (java.io.File root : roots) {
+                java.io.File f = newestGthemeUnder(root, 0);
+                if (f != null && (best == null || f.lastModified() > best.lastModified())) best = f;
+            }
+            if (best != null) Log.i(TAG, "findNewestGtheme fallback -> " + best.getAbsolutePath());
+            return best == null ? null : best.getAbsolutePath();
+        } catch (Throwable t) {
+            return null;
+        }
+    }
+
+    private static java.io.File newestGthemeUnder(java.io.File dir, int depth) {
+        if (dir == null || depth > 5 || !dir.isDirectory()) return null;
+        java.io.File[] kids = dir.listFiles();
+        if (kids == null) return null;
+        java.io.File best = null;
+        for (java.io.File k : kids) {
+            try {
+                java.io.File cand;
+                if (k.isDirectory()) cand = newestGthemeUnder(k, depth + 1);
+                else cand = k.getName().endsWith(".gtheme") ? k : null;
+                if (cand != null && (best == null || cand.lastModified() > best.lastModified())) best = cand;
+            } catch (Throwable ignored) { }
+        }
+        return best;
+    }
+
+    /**
+     * Type-agnostic BFS sibling of {@link #findFieldOfType}: returns the first
+     * reachable object whose {@code toString()} ends with {@code suffix} AND
+     * contains a '/' (i.e. an absolute filesystem path, not a bare filename).
+     * Used to locate the serialized .gtheme path when the host's path type
+     * (okio.Path) is R8-obfuscated and cannot be matched by class name.
+     */
+    private static Object findPathByToString(Object root, String suffix, int maxDepth) {
+        java.util.ArrayDeque<Object[]> queue = new java.util.ArrayDeque<>();
+        java.util.IdentityHashMap<Object, Boolean> seen = new java.util.IdentityHashMap<>();
+        queue.add(new Object[]{root, 0});
+        seen.put(root, Boolean.TRUE);
+        while (!queue.isEmpty()) {
+            Object[] node = queue.poll();
+            Object obj = node[0];
+            int depth = (Integer) node[1];
+            if (obj == null) continue;
+            Class<?> cls = obj.getClass();
+            // Skip String here (a String holding the path is fine, but most
+            // String matches are bare filenames); still allow it via the '/'
+            // check below.
+            if (!(obj instanceof Class) && !cls.isArray()) {
+                try {
+                    String s = obj.toString();
+                    if (s != null && s.endsWith(suffix) && s.indexOf('/') >= 0) {
+                        return obj;
+                    }
+                } catch (Throwable ignored) { }
+            }
+            if (depth >= maxDepth) continue;
+            for (Field f : cls.getDeclaredFields()) {
+                int mods = f.getModifiers();
+                if (java.lang.reflect.Modifier.isStatic(mods)) continue;
+                if (f.getType().isPrimitive()) continue;
+                f.setAccessible(true);
+                Object v;
+                try { v = f.get(obj); } catch (Throwable e) { continue; }
+                if (v == null || seen.containsKey(v)) continue;
+                seen.put(v, Boolean.TRUE);
+                queue.add(new Object[]{v, depth + 1});
+            }
+        }
+        return null;
     }
 
     /**
