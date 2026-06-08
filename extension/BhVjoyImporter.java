@@ -32,13 +32,13 @@ import java.util.concurrent.TimeUnit;
  *
  * Reflection anchors (R8-renamed; these letters need re-derivation on
  * each GameHub minor bump):
- *   - {@link #WITH_CONTEXT_CLASS} = "aig"     — has static `V(...)` =
+ *   - {@link #WITH_CONTEXT_CLASS} = "dig"     — has static `V(...)` =
  *                                              withContext (6.0.4 w0o.s0;
  *                                              the bgl.i/o0n.i wrapper is
  *                                              bypassed, see saveLayoutLocal)
  *   - {@link #DISPATCHER_HOLDER}  = "n80"     — static field `a:Li84;`
  *                                              is Dispatchers.IO (6.0.4 f80)
- *   - {@link #SAVE_BLOCK_CLASS}   = "agl"     — the save-coroutine state
+ *   - {@link #SAVE_BLOCK_CLASS}   = "ggl"     — the save-coroutine state
  *                                              class; ctor takes
  *                                              (String, VJoyLayout, Ljq3;)
  *                                              (6.0.4 m0n)
@@ -54,22 +54,22 @@ public final class BhVjoyImporter {
 
     private static final String TAG = "BhVjoyImporter";
 
-    // === R8-mangled anchors (GameHub 6.0.7; 6.0.4 letters in parens) ===
-    private static final String WITH_CONTEXT_CLASS    = "aig";  // BuildersKt (has V = withContext; 6.0.4 w0o.s0)
+    // === R8-mangled anchors (GameHub 6.0.8; 6.0.4 letters in parens) ===
+    private static final String WITH_CONTEXT_CLASS    = "dig";  // BuildersKt (has V = withContext; 6.0.4 w0o.s0)
     private static final String WITH_CONTEXT_METHOD   = "V";    // withContext method name (6.0.4 "s0")
     private static final String DISPATCHER_HOLDER     = "n80";  // Dispatchers (has a = IO; 6.0.4 f80)
     private static final String COROUTINE_CONTEXT_IF  = "st3";  // CoroutineContext interface, first arg type (6.0.4 dm3)
-    private static final String FUNCTION2_IF          = "uv6";  // Function2 interface, block param (6.0.4 dx6)
+    private static final String FUNCTION2_IF          = "tv6";  // Function2 interface, block param (6.0.4 dx6)
     // Continuation INTERFACE (getContext()+resumeWith) — what the Proxy must
     // implement. 6.0.4 bi3. NB: NOT kq3 (that is ContinuationImpl, the
     // abstract class, = 6.0.4 ci3 — a Proxy can't implement it).
     private static final String CONTINUATION_INTERFACE = "jq3";
-    private static final String SAVE_BLOCK_CLASS      = "agl";  // suspend lambda; ctor (String, VJoyLayout, Continuation) (6.0.4 m0n)
+    private static final String SAVE_BLOCK_CLASS      = "ggl";  // suspend lambda; ctor (String, VJoyLayout, Continuation) (6.0.4 m0n)
     private static final String VJOY_LAYOUT_FQN =
         "com.xiaoji.egggame.common.ui.vjoy.model.VJoyLayout";
 
     // Kept (non-obfuscated) host DB FQNs, used by the post-import Room
-    // invalidation nudge that restores the live My Layouts refresh on 6.0.7
+    // invalidation nudge that restores the live My Layouts refresh on 6.0.8
     // (see nudgeRoomInvalidation). These names are R8-keep-stable.
     private static final String APP_DATABASE_CLS =
         "com.xiaoji.egggame.core.database.AppDatabase";
@@ -282,7 +282,7 @@ public final class BhVjoyImporter {
         // Route a real write through the host's own Room so its (2.7)
         // connection-scoped invalidation tracker fires and the live My
         // Layouts list refreshes immediately. 6.0.4's older Room observed our
-        // external raw write; 6.0.7's does not (the regression the user hit).
+        // external raw write; 6.0.7+'s does not (the regression the user hit).
         nudgeRoomInvalidation(insertedUserId, insertedRowId);
         return true;
     }

@@ -55,8 +55,8 @@ public final class BhMenuRowClick {
                 Class<?> c = Class.forName("kotlin.Unit");
                 u = c.getField("INSTANCE").get(null);
             } catch (Throwable keptNameMissing) {
-                // 6.0.7: R8 obfuscated kotlin.Unit -> Lyxk; (INSTANCE = a).
-                Class<?> c = Class.forName("yxk");
+                // 6.0.8: R8 obfuscated kotlin.Unit -> Leyk; (INSTANCE = a).
+                Class<?> c = Class.forName("eyk");
                 u = c.getDeclaredField("a").get(null);
             }
             UNIT = u;
@@ -128,13 +128,13 @@ public final class BhMenuRowClick {
     }
 
     /**
-     * Game detail More Menu row appender. Constructs a Ltyc; 3-arg row
+     * Game detail More Menu row appender. Constructs a Lwyc; 3-arg row
      * (6.0.4 Liae;) via reflection and adds it to the passed list builder.
-     * Called from a single-instruction smali injection inside Lc37.a (6.0.4
+     * Called from a single-instruction smali injection inside La37.a (6.0.4
      * Lx57.a) — keeps the bytecode patch trivial (no register juggling, no
      * verifier risk) at the cost of a runtime reflection lookup.
      *
-     * The obfuscated class names tyc/n55/gv6/v45 are the GameHub 6.0.7
+     * The obfuscated class names wyc/m55/fv6/u45 are the GameHub 6.0.8
      * letters (6.0.4: iae/o05/pw6/zz4); if a future R8 map shifts them the
      * helper silently no-ops (logged) and the menu falls back to the
      * original rows.
@@ -145,36 +145,36 @@ public final class BhMenuRowClick {
             @SuppressWarnings("unchecked")
             List<Object> list = (List<Object>) menuList;
 
-            Class<?> iaeCls = Class.forName("tyc");
-            Class<?> o05Cls = Class.forName("n55");
-            Class<?> pw6Cls = Class.forName("gv6");
+            Class<?> iaeCls = Class.forName("wyc");
+            Class<?> o05Cls = Class.forName("m55");
+            Class<?> pw6Cls = Class.forName("fv6");
 
-            // Resolve a menu-row icon. Lv45 (6.0.4 Lzz4) is the
+            // Resolve a menu-row icon. Lu45 (6.0.4 Lzz4) is the
             // ComposableSingletons class for menu-row icons; field `x` holds
-            // an Lu3k (6.0.4 Lxrl) Lazy whose getValue() returns an Ln55
+            // an Lu3k (6.0.4 Lxrl) Lazy whose getValue() returns an Lm55
             // (6.0.4 Lo05). We MUST use a field the host's own menu builders
-            // already render: Lc37;->a (this More Menu) and Ly7c;->f (tile
-            // popup) both use Lv45;->x. The earlier choice Lv45;->b0 is an
+            // already render: La37;->a (this More Menu) and Lb8c;->f (tile
+            // popup) both use Lu45;->x. The earlier choice Lu45;->b0 is an
             // icon for a DIFFERENT surface and crashed Compose when rendered
             // here (NoClassDefFound/render fault in do8). x is verified-safe.
-            Class<?> zz4Cls = Class.forName("v45");
+            Class<?> zz4Cls = Class.forName("u45");
             Field iconHolderField = zz4Cls.getDeclaredField("x");
             iconHolderField.setAccessible(true);
             Object xrlWrapper = iconHolderField.get(null);
             if (xrlWrapper == null) {
-                Log.w(TAG, "v45.x is null; cannot resolve icon");
+                Log.w(TAG, "u45.x is null; cannot resolve icon");
                 return;
             }
             Object iconValue = xrlWrapper.getClass().getMethod("getValue").invoke(xrlWrapper);
             if (!o05Cls.isInstance(iconValue)) {
-                Log.w(TAG, "v45.x.getValue() did not return Ln55");
+                Log.w(TAG, "u45.x.getValue() did not return Lm55");
                 return;
             }
 
-            // R8 renamed kotlin.jvm.functions.Function1 to Lgv6 (6.0.4
+            // R8 renamed kotlin.jvm.functions.Function1 to Lfv6 (6.0.4
             // Lpw6) in the host APK, so our Java `implements
             // Function1<Object, Object>` IS a different JVM class from the
-            // host's Lgv6. Ltyc's ctor requires Lgv6 specifically — direct
+            // host's Lfv6. Lwyc's ctor requires Lfv6 specifically — direct
             // Java implements doesn't satisfy the type check. Fix: a Proxy
             // that implements Lgv6 at runtime and delegates invoke to
             // our BhMenuRowClick.
@@ -205,15 +205,15 @@ public final class BhMenuRowClick {
     }
 
     /**
-     * Library-tile popup variant (6.0.7 Ly7c.f, 6.0.4 Lted.f). Rows use
-     * Lg6c(String actionId, Ln55 icon, String label, Lev6 onClick) (6.0.4
+     * Library-tile popup variant (6.0.8 Lb8c.f, 6.0.4 Lted.f). Rows use
+     * Lj6c(String actionId, Lm55 icon, String label, Ldv6 onClick) (6.0.4
      * Lscd / Lo05 / Lnw6) with a Function0 click handler (no args), and the
      * rows are collected into an ArrayList via the host's arrayListOf helper
-     * (6.0.7 Llp0;->R, 6.0.4 Lqs2;->H).
+     * (6.0.8 Llp0;->R, 6.0.4 Lqs2;->H).
      *
      * The smali injection replaces that list with a new ArrayList containing
      * the original rows plus our PC Vibration Settings row. Returns an
-     * ArrayList (NOT a bare List): in 6.0.7 the host threads the result
+     * ArrayList (NOT a bare List): in 6.0.8 the host threads the result
      * register through ArrayList.size()/get(I), so the return type must be
      * Ljava/util/ArrayList; or dex verification fails. The smali captures the
      * return value and reassigns it to the list register.
@@ -224,10 +224,10 @@ public final class BhMenuRowClick {
             List<?> origList = (List<?>) original;
             ArrayList<Object> augmented = new ArrayList<>(origList);
 
-            Class<?> scdCls = Class.forName("g6c");
-            Class<?> o05Cls = Class.forName("n55");
-            Class<?> nw6Cls = Class.forName("ev6");
-            Class<?> zz4Cls = Class.forName("v45");
+            Class<?> scdCls = Class.forName("j6c");
+            Class<?> o05Cls = Class.forName("m55");
+            Class<?> nw6Cls = Class.forName("dv6");
+            Class<?> zz4Cls = Class.forName("u45");
 
             Field iconField = zz4Cls.getDeclaredField("x");
             iconField.setAccessible(true);
@@ -271,17 +271,17 @@ public final class BhMenuRowClick {
     }
 
     /**
-     * Library-list 3-dot popup variant (6.0.7 Levb.b0, 6.0.4 Lpzc.j0). Uses
+     * Library-list 3-dot popup variant (6.0.8 Lhvb.b0, 6.0.4 Lpzc.j0). Uses
      * a third row data class:
-     *   Lstc(Ldwj label, Lev6 onClick, int)  [synthetic 3-arg ctor]
+     *   Lvtc(Lkwj label, Ldv6 onClick, int)  [synthetic 3-arg ctor]
      *     (6.0.4: Lz4e(Lell, Lnw6, int))
-     *     - Ldwj extends Lshg(String key, Set<String> locales) (6.0.4
+     *     - Lkwj extends Lvhg(String key, Set<String> locales) (6.0.4
      *       Lell extends Ltdi), a Compose Multiplatform string-resource
-     *       descriptor; resolved at render time by Lok8.c0 (6.0.4 Lxd3.l1).
-     *     - Lev6 is Function0 (no-arg lambda) (6.0.4 Lnw6).
+     *       descriptor; resolved at render time by Lqk8.c0 (6.0.4 Lxd3.l1).
+     *     - Ldv6 is Function0 (no-arg lambda) (6.0.4 Lnw6).
      *
      * Our label key "bh_pc_vibration_label" is also patched into the
-     * resolver Lok8.c0 via maybeResolveCustomLabel below, so the
+     * resolver Lqk8.c0 via maybeResolveCustomLabel below, so the
      * Compose runtime doesn't need a matching CVR entry to render
      * "PC Vibration Settings".
      */
@@ -291,18 +291,18 @@ public final class BhMenuRowClick {
             List<?> origList = (List<?>) original;
             ArrayList<Object> augmented = new ArrayList<>(origList);
 
-            Class<?> z4eCls = Class.forName("stc");
-            Class<?> ellCls = Class.forName("dwj");
-            Class<?> tdiCls = Class.forName("shg");
-            Class<?> nw6Cls = Class.forName("ev6");
+            Class<?> z4eCls = Class.forName("vtc");
+            Class<?> ellCls = Class.forName("kwj");
+            Class<?> tdiCls = Class.forName("vhg");
+            Class<?> nw6Cls = Class.forName("dv6");
 
             // Ldwj (6.0.4 Lell) is a Kotlin empty subclass of abstract
-            // Lshg(String, Set<String>) (6.0.4 Ltdi) — at bytecode level the
-            // host does `new-instance Ldwj; invoke Lshg.<init>`, but
+            // Lvhg(String, Set<String>) (6.0.4 Ltdi) — at bytecode level the
+            // host does `new-instance Lkwj; invoke Lvhg.<init>`, but
             // ellCls.getDeclaredConstructor(String.class, Set.class)
-            // returns nothing because Ldwj declares no ctor itself.
-            // Workaround: allocate Ldwj via sun.misc.Unsafe (skips
-            // ctor entirely) and reflect-set the inherited Lshg
+            // returns nothing because Lkwj declares no ctor itself.
+            // Workaround: allocate Lkwj via sun.misc.Unsafe (skips
+            // ctor entirely) and reflect-set the inherited Lvhg
             // fields a (key) and b (locales).
             Class<?> unsafeCls = Class.forName("sun.misc.Unsafe");
             Field theUnsafe = unsafeCls.getDeclaredField("theUnsafe");
@@ -332,7 +332,7 @@ public final class BhMenuRowClick {
                 }
             );
 
-            // Lstc(Ldwj;Lev6;I)V synthetic ctor (6.0.4 Lz4e(Lell;Lnw6;I)V)
+            // Lvtc(Lkwj;Ldv6;I)V synthetic ctor (6.0.4 Lz4e(Lell;Lnw6;I)V)
             // — int=0 should be a safe default group/category marker.
             Constructor<?> z4eCtor =
                 z4eCls.getDeclaredConstructor(ellCls, nw6Cls, int.class);
@@ -353,8 +353,8 @@ public final class BhMenuRowClick {
         return new ArrayList<>();
     }
 
-    /** ArrayList-typed fallback for appendScdRowToTedList — its 6.0.7 caller
-     *  (Ly7c.f) consumes the result via ArrayList.size()/get(I), so the
+    /** ArrayList-typed fallback for appendScdRowToTedList — its 6.0.8 caller
+     *  (Lb8c.f) consumes the result via ArrayList.size()/get(I), so the
      *  return must be a concrete ArrayList, never a bare List. */
     @SuppressWarnings("unchecked")
     private static ArrayList<Object> safeReturnArrayList(Object o) {
@@ -366,7 +366,7 @@ public final class BhMenuRowClick {
     }
 
     /**
-     * Patched into the resolver Lok8.c0 (6.0.4 Lxd3.l1) to short-circuit our
+     * Patched into the resolver Lqk8.c0 (6.0.4 Lxd3.l1) to short-circuit our
      * sentinel key BEFORE it hits the Compose Multiplatform resource lookup
      * (which throws "Resource with ID='string:bh_pc_vibration_label'
      * not found" because the runtime expects a manifest registration
@@ -383,7 +383,7 @@ public final class BhMenuRowClick {
     /**
      * Same as {@link #maybeResolveCustomLabel} but with the
      * kickImportFromDialogOpen side effect suppressed. Used by the
-     * non-Compose / suspend resolver hooks (Lok8;->d0/J/K, 6.0.4
+     * non-Compose / suspend resolver hooks (Lqk8;->d0/J/K, 6.0.4
      * Lxd3;->m1/P0/Q0): those paths
      * exist to surface resource strings outside composition (e.g. toast
      * format strings), so we want our label overrides to apply but we
@@ -396,7 +396,7 @@ public final class BhMenuRowClick {
 
     private static String resolveCustomLabel(Object ell, boolean fireSideEffects) {
         try {
-            Field aField = Class.forName("shg").getDeclaredField("a");
+            Field aField = Class.forName("vhg").getDeclaredField("a");
             aField.setAccessible(true);
             Object key = aField.get(ell);
             if (key == null) return null;
@@ -416,8 +416,8 @@ public final class BhMenuRowClick {
             //
             // 6.0.7: the VJoy share/import strings moved from the
             // `features_vjoy_*` namespace to the `common.vjoy` bundle with
-            // `common_vjoy_layout_*` keys (device-verified from the 6.0.7
-            // CVR). The keys below are the 6.0.7 names; the resource-id
+            // `common_vjoy_layout_*` keys (re-verified from the 6.0.8
+            // CVR). The keys below are the 6.0.8 names; the resource-id
             // format is still "string:" + key (proven by the menu-row label
             // working). Falls through to the stock label on any non-match.
             else if ("string:common_vjoy_layout_func_share".equals(key)) {
@@ -457,7 +457,7 @@ public final class BhMenuRowClick {
             }
             // Suppress the "Operation failed, please try again." toast that
             // fires after interceptShare throws to abort the cloud publish.
-            // 6.0.7 dropped the share-specific failure string and shows this
+            // 6.0.8 dropped the share-specific failure string and shows this
             // generic key instead; overriding to "" makes Android skip the
             // (now empty) toast. NOTE: this key is generic to layout ops, so
             // genuine non-share "operation failed" toasts are also swallowed

@@ -4,17 +4,17 @@ name: Build APK
 # bannerhub-revanced's privacy patch set. Adds dual-motor low/high
 # dispatch + preload-free SDL rumble keepalive (winebus.so duration
 # patched on disk) and kills Firebase / GMS Measurement / Mob Push /
-# XiaoJi heartbeat+events / JieLi OTA on top of stock GameHub 6.0.7.
+# XiaoJi heartbeat+events / JieLi OTA on top of stock GameHub 6.0.8.
 # Otherwise unchanged from upstream Tencent build.
 #
 # One-time setup: upload the original GameHub APK as an asset on a
-# release tagged `base-apk-6.0.7` in this repo. The workflow
+# release tagged `base-apk-6.0.8` in this repo. The workflow
 # `gh release download`s from there.
 
 on:
   push:
     tags:
-      - 'v*-6.0.7*'
+      - 'v*-6.0.8*'
   workflow_dispatch:
 
 jobs:
@@ -30,11 +30,11 @@ jobs:
       - name: Resolve base version
         id: base
         run: |
-          # Only 6.0.7 is supported. Kept as a step so downstream steps can
+          # Only 6.0.8 is supported. Kept as a step so downstream steps can
           # still reference steps.base.outputs.* without restructuring.
-          echo "version=6.0.7" >> "$GITHUB_OUTPUT"
-          echo "release_tag=base-apk-6.0.7" >> "$GITHUB_OUTPUT"
-          echo "Base version: 6.0.7"
+          echo "version=6.0.8" >> "$GITHUB_OUTPUT"
+          echo "release_tag=base-apk-6.0.8" >> "$GITHUB_OUTPUT"
+          echo "Base version: 6.0.8"
 
       - name: Download original GameHub APK
         run: |
@@ -130,7 +130,7 @@ jobs:
 
           # Compile vibration extension Java + d8 to classes<N>.dex, where
           # <N> is the next free dex slot after the rebuilt APK's stock dex
-          # files, computed dynamically below. (6.0.7 has 5 stock dex files
+          # files, computed dynamically below. (6.0.8 has 5 stock dex files
           # → classes6; 6.0.4 had 6 → classes7.)
           ANDROID_JAR=$(ls $ANDROID_SDK_ROOT/platforms/android-*/android.jar 2>/dev/null | sort -V | tail -1)
           mkdir -p ext_classes

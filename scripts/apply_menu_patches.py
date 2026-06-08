@@ -2,31 +2,31 @@
 """
 Inject the "PC Vibration Settings" row into GameHub's three per-game menu
 surfaces, plus the supporting per-game gameId capture and Compose-resource
-label resolver. Supports stock 6.0.7 only.
+label resolver. Supports stock 6.0.8 only.
 
 Port of bannerhub-revanced's VibrationManifestPatch + VibrationMenuLabelPatch
 + MenuGameIdCapturePatch + VibrationMenuRowPatch — translated from ReVanced
 Kotlin / dexlib2 introspection to apktool-tree text edits to fit this
 fork's Python+apktool pipeline.
 
-Menu surfaces patched (6.0.7 letters; 6.0.4 names in parentheses)
+Menu surfaces patched (6.0.8 letters; 6.0.4 names in parentheses)
 ---------------------
 
-  Lc37;->a(Lf17;ILev6;Ljh7;Leh3;I)V                      (game detail More Menu; was Lx57;->a)
-  Ly7c;->f(Lz7c;Lgv6;Lev6;ZLfyc;Leh3;I)V                 (library-tile popup; was Lted;->f)
-  Levb;->b0(Loza;Z…)Ljava/util/List;                     (library-list 3-dot popup; was Lpzc;->j0)
+  La37;->a(Le17;ILdv6;Lhh7;Leh3;I)V                      (game detail More Menu; was Lx57;->a)
+  Lb8c;->f(Lc8c;Lfv6;Ldv6;ZLiyc;Leh3;I)V                 (library-tile popup; was Lted;->f)
+  Lhvb;->b0(Lsza;Z…)Ljava/util/List;                     (library-list 3-dot popup; was Lpzc;->j0)
 
 6.0.7 drift handled below: R8 letters regenerated; .line directives stripped;
-the More-Menu/3-dot list builder is Lj3c; (was Lx9d;) and finalize moved to a
+the More-Menu/3-dot list builder is Lm3c; (was Lx9d;) and finalize moved to a
 STATIC helper Lny2;->C (was instance Lx9d;->i); the tile-popup listOf helper
 is Llp0;->R returning ArrayList (was Lqs2;->H returning List); the resolver
-class is Lok8; (was Lxd3;). The Composable signatures also gained params (an
+class is Lqk8; (was Lxd3;). The Composable signatures also gained params (an
 int + extra callbacks), but the captured menu-data param is still p0.
 
 Supporting patches
 ------------------
 
-  Lok8;->c0(Ldwj;Leh3;I)Ljava/lang/String;   (was Lxd3;->l1(Lell;Lv83;I)…)
+  Lqk8;->c0(Lkwj;Leh3;I)Ljava/lang/String;   (was Lxd3;->l1(Lell;Lv83;I)…)
       Resource-resolver short-circuit. Detects our sentinel key
       "string:bh_pc_vibration_label" and returns "PC Vibration Settings"
       before the Compose Multiplatform lookup runs. Required because
@@ -35,7 +35,7 @@ Supporting patches
       documented this as a multi-day debugging journey; we mirror their
       final solution.
 
-  Index-0 captureGameId(p0) in all 3 menu builders (Lc37.a, Ly7c.f, Levb.b0)
+  Index-0 captureGameId(p0) in all 3 menu builders (La37.a, Lb8c.f, Lhvb.b0)
       Reads the per-game id from the menu-data param and stashes it in
       BhMenuGameId so the click handler scopes BhVibrationSettingsActivity
       to the right game. Cross-process via SharedPreferences mirror
@@ -114,7 +114,7 @@ def write(path, content):
 # See apply_vibration_patches.py for why the 6.0.4 ab8/bg5 probe is unusable
 # on 6.0.7 (letters reused). Anchor on the renamed app class instead.
 VERSION_PROBES = {
-    "6.0.7": (
+    "6.0.8": (
         "smali_classes3/com/xiaoji/egggame/AndroidApp.smali",
         "smali_classes3/com/winemu/core/gamepad/GamepadServerManager.smali",
     ),
@@ -314,40 +314,40 @@ CAPTURE_GAME_ID = (
 
 
 def patch_menu_gameid_capture(root: Path) -> None:
-    # 1. Game-details More Menu — Lc37;->a(Lf17;ILev6;Ljh7;Leh3;I)V (was
+    # 1. Game-details More Menu — La37;->a(Le17;ILdv6;Lhh7;Leh3;I)V (was
     #    Lx57;->a(Lf37;Lpo7;Lv83;I)V). p0 is still the menu-data param.
-    p = root / "smali_classes4/c37.smali"
+    p = root / "smali_classes4/a37.smali"
     src = read(p)
     src = inject_at_method_entry(
         src,
-        ".method public static final a(Lf17;ILev6;Ljh7;Leh3;I)V\n",
+        ".method public static final a(Le17;ILdv6;Lhh7;Leh3;I)V\n",
         CAPTURE_GAME_ID,
-        "c37.a: captureGameId(menuData)",
+        "a37.a: captureGameId(menuData)",
     )
     write(p, src)
 
-    # 2. Library-tile popup — Ly7c;->f(Lz7c;Lgv6;Lev6;ZLfyc;Leh3;I)V (was
+    # 2. Library-tile popup — Lb8c;->f(Lc8c;Lfv6;Ldv6;ZLiyc;Leh3;I)V (was
     #    Lted;->f(Lued;Lpw6;Lnw6;ZLt9e;Lv83;I)V).
-    p = root / "smali_classes4/y7c.smali"
+    p = root / "smali_classes4/b8c.smali"
     src = read(p)
     src = inject_at_method_entry(
         src,
-        ".method public static final f(Lz7c;Lgv6;Lev6;ZLfyc;Leh3;I)V\n",
+        ".method public static final f(Lc8c;Lfv6;Ldv6;ZLiyc;Leh3;I)V\n",
         CAPTURE_GAME_ID,
-        "y7c.f: captureGameId(menuData)",
+        "b8c.f: captureGameId(menuData)",
     )
     write(p, src)
 
-    # 3. Library-list 3-dot popup — Levb;->b0(Loza;Z…)Ljava/util/List; (was
+    # 3. Library-list 3-dot popup — Lhvb;->b0(Lsza;Z…)Ljava/util/List; (was
     #    Lpzc;->j0(...); also moved smali_classes5 -> smali_classes4).
-    p = root / "smali_classes4/evb.smali"
+    p = root / "smali_classes4/hvb.smali"
     src = read(p)
     src = inject_at_method_entry(
         src,
-        ".method public static final b0(Loza;ZLdtb;Ldtb;Lpg8;Lpg8;Lx6b;Lny;"
-        "Ljq2;Lctb;Ldtb;)Ljava/util/List;\n",
+        ".method public static final b0(Lsza;ZLgtb;Lgtb;Lrg8;Lrg8;La7b;Lny;"
+        "Ljq2;Lftb;Lgtb;)Ljava/util/List;\n",
         CAPTURE_GAME_ID,
-        "evb.b0: captureGameId(menuData)",
+        "hvb.b0: captureGameId(menuData)",
     )
     write(p, src)
 
@@ -360,11 +360,11 @@ VIB_HANDLER = "Lcom/xj/winemu/vibration/BhMenuRowClick;"
 
 
 def patch_menu_rows(root: Path) -> None:
-    # ----- Injection 1: Lc37;->a (6.0.4 Lx57;->a) — append a row to the
+    # ----- Injection 1: La37;->a (6.0.4 Lx57;->a) — append a row to the
     # game-details More Menu by handing the list builder (v3) to the Java
     # helper.
     #
-    # Anchor: the LAST `invoke-virtual {v3, v?}, Lj3c;->add(Object)Z` call
+    # Anchor: the LAST `invoke-virtual {v3, v?}, Lm3c;->add(Object)Z` call
     # within the method body. The whole-menu Composable contains a chain of
     # such add() calls (one per row); appending after the last one puts our
     # row at the bottom of the menu.
@@ -372,30 +372,30 @@ def patch_menu_rows(root: Path) -> None:
     # Why hand off to Java instead of constructing the row item (Ltyc;,
     # 6.0.4 Liae;) inline: a first attempt that built the row directly in
     # smali hit an ART verifier failure at a Compose merge point (the
-    # Function1 type Lgv6; vs BhMenuRowClick proxy type unification). The
+    # Function1 type Lfv6; vs BhMenuRowClick proxy type unification). The
     # single-instruction invoke-static is verifier-invisible at the
     # surrounding type-flow level.
-    p = root / "smali_classes4/c37.smali"
+    p = root / "smali_classes4/a37.smali"
     src = read(p)
-    # Anchor: the LAST `invoke-virtual {vN, vM}, Lj3c;->add(Object)Z` line in
-    # the method body (Lj3c; is the 6.0.7 list builder, was Lx9d;). The list
+    # Anchor: the LAST `invoke-virtual {vN, vM}, Lm3c;->add(Object)Z` line in
+    # the method body (Lm3c; is the 6.0.7 list builder, was Lx9d;). The list
     # builder lives in v3 in 6.0.7 (was v4 in 6.0.4); the static finalize
     # Lny2;->C(List) follows shortly after the last add, so appending after
     # the last add() puts our row at the bottom of the menu.
     src = inject_after_anchor(
         src,
-        ".method public static final a(Lf17;ILev6;Ljh7;Leh3;I)V\n",
-        r"    invoke-virtual \{v\d+, v\d+\}, Lj3c;->add\(Ljava/lang/Object;\)Z\n",
+        ".method public static final a(Le17;ILdv6;Lhh7;Leh3;I)V\n",
+        r"    invoke-virtual \{v\d+, v\d+\}, Lm3c;->add\(Ljava/lang/Object;\)Z\n",
         "\n"
         "    # BH menu row: append PC Vibration Settings via reflection helper.\n"
         f"    invoke-static {{v3}}, {VIB_HANDLER}->"
         "appendVibrationRowTo(Ljava/lang/Object;)V\n",
-        "c37.a: append PC Vibration Settings to More Menu list",
+        "a37.a: append PC Vibration Settings to More Menu list",
         last=True,
     )
     write(p, src)
 
-    # ----- Injection 2: Ly7c;->f (6.0.4 Lted;->f) — replace the ArrayList
+    # ----- Injection 2: Lb8c;->f (6.0.4 Lted;->f) — replace the ArrayList
     # returned by Llp0;->R([Object;)ArrayList with an augmented ArrayList.
     # The next instruction after the static is `move-result-object vN` where
     # vN is the list register; we capture our helper's return into the same
@@ -406,7 +406,7 @@ def patch_menu_rows(root: Path) -> None:
     #     invoke-static {v0}, Llp0;->R([Ljava/lang/Object;)Ljava/util/ArrayList;
     #     <move-result-object vN>
     # Inject our helper call + matching move-result after the move-result.
-    p = root / "smali_classes4/y7c.smali"
+    p = root / "smali_classes4/b8c.smali"
     src = read(p)
     # 6.0.7: the listOf helper is Llp0;->R([Object;) returning ArrayList (was
     # Lqs2;->H([Object;) returning List). The result register is consumed
@@ -418,22 +418,22 @@ def patch_menu_rows(root: Path) -> None:
     )
     start, end = find_method(
         src,
-        ".method public static final f(Lz7c;Lgv6;Lev6;ZLfyc;Leh3;I)V\n",
+        ".method public static final f(Lc8c;Lfv6;Ldv6;ZLiyc;Leh3;I)V\n",
     )
     if start < 0:
-        print("ERROR: y7c.f method not found", file=sys.stderr)
+        print("ERROR: b8c.f method not found", file=sys.stderr)
         sys.exit(1)
     body = src[start:end]
     listof_rel = body.find(listof_call)
     if listof_rel < 0:
-        print("ERROR: y7c.f Llp0;->R call not found", file=sys.stderr)
+        print("ERROR: b8c.f Llp0;->R call not found", file=sys.stderr)
         sys.exit(1)
     # Find the move-result-object on the next line.
     cursor = listof_rel + len(listof_call)
     move_result_pat = re.compile(r"    move-result-object (v\d+|p\d+)\n")
     mo = move_result_pat.search(body, cursor)
     if not mo or mo.start() - cursor > 200:
-        print("ERROR: no move-result-object after y7c.f Llp0;->R within window",
+        print("ERROR: no move-result-object after b8c.f Llp0;->R within window",
               file=sys.stderr)
         sys.exit(1)
     list_reg = mo.group(1)
@@ -447,47 +447,47 @@ def patch_menu_rows(root: Path) -> None:
         f"    move-result-object {list_reg}\n"
     )
     if VIB_HANDLER + "->appendScdRowToTedList" in src[after_move:after_move + 400]:
-        print("OK: y7c.f (already injected)")
+        print("OK: b8c.f (already injected)")
     else:
         src = src[:after_move] + inject + src[after_move:]
         write(p, src)
-        print("OK: y7c.f: augment Llp0;->R list with PC Vibration Settings row")
+        print("OK: b8c.f: augment Llp0;->R list with PC Vibration Settings row")
 
-    # ----- Injection 3: Levb;->b0 — augment the list right before the
+    # ----- Injection 3: Lhvb;->b0 — augment the list right before the
     # method's final return-object. 6.0.7 finalize moved from the instance
-    # call Lx9d;->i()Lx9d; to the STATIC helper Lny2;->C(Ljava/util/List;)Lj3c;.
+    # call Lx9d;->i()Lx9d; to the STATIC helper Lny2;->C(Ljava/util/List;)Lm3c;.
     # The pattern is:
-    #     invoke-static {vN}, Lny2;->C(Ljava/util/List;)Lj3c;
+    #     invoke-static {vN}, Lny2;->C(Ljava/util/List;)Lm3c;
     #     move-result-object pN  (or vN)
     #     return-object pN       (or vN)
     # Inject between the move-result-object and the return-object.
-    p = root / "smali_classes4/evb.smali"
+    p = root / "smali_classes4/hvb.smali"
     src = read(p)
     b0_header = (
-        ".method public static final b0(Loza;ZLdtb;Ldtb;Lpg8;Lpg8;Lx6b;Lny;"
-        "Ljq2;Lctb;Ldtb;)Ljava/util/List;\n"
+        ".method public static final b0(Lsza;ZLgtb;Lgtb;Lrg8;Lrg8;La7b;Lny;"
+        "Ljq2;Lftb;Lgtb;)Ljava/util/List;\n"
     )
     start, end = find_method(src, b0_header)
     if start < 0:
-        print("ERROR: evb.b0 method not found", file=sys.stderr)
+        print("ERROR: hvb.b0 method not found", file=sys.stderr)
         sys.exit(1)
     body = src[start:end]
-    # Last `invoke-static {vN}, Lny2;->C(Ljava/util/List;)Lj3c;` in the body
+    # Last `invoke-static {vN}, Lny2;->C(Ljava/util/List;)Lm3c;` in the body
     # (the finalize just before return-object; Lny2;->C appears elsewhere in
     # the file but exactly once inside b0).
     finalize_pat = re.compile(
-        r"    invoke-static \{v\d+\}, Lny2;->C\(Ljava/util/List;\)Lj3c;\n"
+        r"    invoke-static \{v\d+\}, Lny2;->C\(Ljava/util/List;\)Lm3c;\n"
     )
     finalize_matches = list(finalize_pat.finditer(body))
     if not finalize_matches:
-        print("ERROR: evb.b0 Lny2;->C finalize call not found", file=sys.stderr)
+        print("ERROR: hvb.b0 Lny2;->C finalize call not found", file=sys.stderr)
         sys.exit(1)
     finalize_end = finalize_matches[-1].end()
     # The next move-result-object captures the list into a register.
     after_finalize = body[finalize_end:]
     mo = re.search(r"    move-result-object (v\d+|p\d+)\n", after_finalize)
     if not mo:
-        print("ERROR: no move-result-object after evb.b0 Lny2;->C finalize",
+        print("ERROR: no move-result-object after hvb.b0 Lny2;->C finalize",
               file=sys.stderr)
         sys.exit(1)
     list_reg = mo.group(1)
@@ -501,11 +501,11 @@ def patch_menu_rows(root: Path) -> None:
         f"    move-result-object {list_reg}\n"
     )
     if VIB_HANDLER + "->appendLibraryPopupRow" in src[inject_abs:inject_abs + 400]:
-        print("OK: evb.b0 (already injected)")
+        print("OK: hvb.b0 (already injected)")
     else:
         src = src[:inject_abs] + inject + src[inject_abs:]
         write(p, src)
-        print("OK: evb.b0: augment library-list popup with PC Vibration row")
+        print("OK: hvb.b0: augment library-list popup with PC Vibration row")
 
 
 # ---------------------------------------------------------------------------
@@ -527,13 +527,13 @@ def patch_resolver(root: Path) -> None:
     with the label trailing means the label resolves to "the first
     original instruction" — which is what we want.
 
-    6.0.7: the resolver class moved Lxd3; (smali/) -> Lok8;
-    (smali_classes3/) and the method l1(Lell;Lv83;I) -> c0(Ldwj;Leh3;I).
+    6.0.7: the resolver class moved Lxd3; (smali/) -> Lqk8;
+    (smali_classes3/) and the method l1(Lell;Lv83;I) -> c0(Lkwj;Leh3;I).
     The injected body is unchanged (v0 is free under .locals 6)."""
-    p = root / "smali_classes3/ok8.smali"
+    p = root / "smali_classes3/qk8.smali"
     src = read(p)
     header = (
-        ".method public static final c0(Ldwj;Leh3;I)Ljava/lang/String;\n"
+        ".method public static final c0(Lkwj;Leh3;I)Ljava/lang/String;\n"
     )
     body = (
         "    # BH resource-resolver short-circuit: return our PC Vibration\n"
@@ -546,7 +546,7 @@ def patch_resolver(root: Path) -> None:
         "    :bh_resolve_fallthrough\n"
     )
     src = inject_at_method_entry(
-        src, header, body, "ok8.c0: short-circuit sentinel key resolution"
+        src, header, body, "qk8.c0: short-circuit sentinel key resolution"
     )
     write(p, src)
 

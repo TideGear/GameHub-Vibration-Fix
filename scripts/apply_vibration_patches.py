@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Apply PC-accurate vibration patches to a decompiled GameHub apktool tree.
-Supports stock 6.0.7 only.
+Supports stock 6.0.8 only.
 
 Hooks:
 
@@ -18,11 +18,11 @@ Per-version ProGuard rename maps are baked into RENAMES_6X below.
 6.0.7 vs 6.0.4 drift baked into these anchors: R8 letters were fully
 regenerated and .line debug directives are stripped from the app/obfuscated
 code, so anchors are built from instruction sequences + method headers only
-(no .line lines). The Physical class Lab8;->Lnz7; was re-lettered
+(no .line lines). The Physical class Lab8;->Lpz7; was re-lettered
 (rumble g(II)V->h(II)V, stop f()V->g()V) and the per-vibrator list access
 moved into a new accessor i()Ljava/util/List;, so the stop hook now anchors
 on g()V's opener rather than the old inline k-field load. The EnvBuilder
-Lbg5;->Lbqn; (now in smali/, not smali_classes3/) no longer joins env vars
+Lbg5;->Liqn; (now in smali/, not smali_classes3/) no longer joins env vars
 inline and no longer retains a Context at the join site, so the winebus
 disk-patch trigger rides the EnvBuilder CONSTRUCTOR (where the live Context
 is still in p1) instead of the joinToString call site.
@@ -74,7 +74,7 @@ def patch(path, old, new, label):
 # obfuscated app class renamed in 6.0.7 (BaseAndroidApp -> AndroidApp), which
 # is absent in 6.0.4, plus the stable gamepad manager path.
 VERSION_PROBES = {
-    "6.0.7": (
+    "6.0.8": (
         "smali_classes3/com/xiaoji/egggame/AndroidApp.smali",
         "smali_classes3/com/winemu/core/gamepad/GamepadServerManager.smali",
     ),
@@ -118,13 +118,13 @@ def detect_version(root: Path) -> str:
 # R8 letters regenerated and anchors rewritten .line-free (6.0.7 strips line
 # debug info from app code). Method letters on the Physical class shifted
 # (rumble g(II)V -> h(II)V, stop f()V -> g()V) and the EnvBuilder moved to
-# the primary smali/ dir as Lbqn; with the winebus trigger now on its ctor.
+# the primary smali/ dir as Liqn; with the winebus trigger now on its ctor.
 RENAMES_6X = {
-    "6.0.7": {
-        "physical": "nz7",          # Lab8; -> Lnz7; (smali_classes3)
+    "6.0.8": {
+        "physical": "pz7",          # Lab8; -> Lpz7; (smali_classes3)
         "physical_rumble": "h",     # g(II)V -> h(II)V
         "physical_stop": "g",       # f()V  -> g()V
-        "envbuilder": "bqn",        # Lbg5; -> Lbqn; (now in smali/)
+        "envbuilder": "iqn",        # Lbg5; -> Liqn; (now in smali/)
     },
 }
 
@@ -245,7 +245,7 @@ def apply_6x(root: Path, version: str) -> None:
     # builder's own Context field. In 6.0.7 that join moved out of the builder
     # into a separate env-map class and the EnvBuilder no longer retains a
     # Context, so there is no Context reachable at the join site. The ctor
-    # Lbqn;-><init>(Landroid/content/Context;Lrj3;Ltn3;Ljava/lang/String;Lgb5;)V
+    # Liqn;-><init>(Landroid/content/Context;Lrj3;Ltn3;Ljava/lang/String;Lgb5;)V
     # still receives the live Context in p1, so we inject there — immediately
     # after the super-<init> call and before p1 is reused as the Lhj5; env
     # map. p0 is initialized post-super, v0 holds the synthetic switch-id and
