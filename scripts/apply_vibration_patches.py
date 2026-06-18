@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Apply PC-accurate vibration patches to a decompiled GameHub apktool tree.
-Supports stock 6.0.8 only.
+Supports stock 6.0.9 only.
 
 Hooks:
 
@@ -74,7 +74,7 @@ def patch(path, old, new, label):
 # obfuscated app class renamed in 6.0.7 (BaseAndroidApp -> AndroidApp), which
 # is absent in 6.0.4, plus the stable gamepad manager path.
 VERSION_PROBES = {
-    "6.0.8": (
+    "6.0.9": (
         "smali_classes3/com/xiaoji/egggame/AndroidApp.smali",
         "smali_classes3/com/winemu/core/gamepad/GamepadServerManager.smali",
     ),
@@ -120,11 +120,11 @@ def detect_version(root: Path) -> str:
 # (rumble g(II)V -> h(II)V, stop f()V -> g()V) and the EnvBuilder moved to
 # the primary smali/ dir as Liqn; with the winebus trigger now on its ctor.
 RENAMES_6X = {
-    "6.0.8": {
-        "physical": "pz7",          # Lab8; -> Lpz7; (smali_classes3)
-        "physical_rumble": "h",     # g(II)V -> h(II)V
-        "physical_stop": "g",       # f()V  -> g()V
-        "envbuilder": "iqn",        # Lbg5; -> Liqn; (now in smali/)
+    "6.0.9": {
+        "physical": "y98",          # 6.0.8 Lpz7; -> 6.0.9 Ly98; (smali_classes3)
+        "physical_rumble": "h",     # g(II)V -> h(II)V (unchanged)
+        "physical_stop": "g",       # f()V  -> g()V (unchanged)
+        "envbuilder": "f1p",        # 6.0.8 Liqn; -> 6.0.9 Lf1p; (moved smali/ -> smali_classes3/)
     },
 }
 
@@ -249,9 +249,10 @@ def apply_6x(root: Path, version: str) -> None:
     # still receives the live Context in p1, so we inject there — immediately
     # after the super-<init> call and before p1 is reused as the Lhj5; env
     # map. p0 is initialized post-super, v0 holds the synthetic switch-id and
-    # is untouched. (smali/ retains .line directives, unlike smali_classes3.)
+    # is untouched. (In 6.0.9 the EnvBuilder moved smali/ -> smali_classes3/
+    # but still retains .line directives, so the .line 680 anchor holds.)
     patch(
-        root / f"smali/{env}.smali",
+        root / f"smali_classes3/{env}.smali",
         "    invoke-direct {p0}, Ljava/lang/Object;-><init>()V\n"
         "\n"
         "    .line 680\n"

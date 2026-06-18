@@ -4,14 +4,14 @@ VJoy on-screen-controls export/import to/from local files.
 
 Replaces GameHub's cloud-only "share-by-code" flow for on-screen controller
 layouts with portable local `.gtheme` files. No cloud account, no HTTP.
-Supports stock 6.0.8 only.
+Supports stock 6.0.9 only.
 
 The four bytecode hooks are URL-fragment-anchored (not R8-letter-anchored),
-so they re-discover their methods unchanged on 6.0.8 (the VJoy share repo
-moved Lrqn; -> Lkkm; -> Lqkm; but the script locates it by the vcontroller/*
-URL strings). Only the resolver dependency moved: the short-circuit installed by
-apply_menu_patches.py is now on Lqk8;->c0 (was Lxd3;->l1), and the sibling
-resolver variants extended here are Lqk8;->d0/J/K (was Lxd3;->m1/P0/Q0).
+so they re-discover their methods unchanged on 6.0.9 (the VJoy share repo
+moved Lrqn; -> Lkkm; -> Lqkm; -> Laun; but the script locates it by the
+vcontroller/* URL strings). Only the resolver dependency moved: the short-circuit installed by
+apply_menu_patches.py is now on Ly99;->c0 (was Lxd3;->l1), and the sibling
+resolver variants extended here are Ly99;->d0/J/K (was Lxd3;->m1/P0/Q0).
 
 Port of bannerhub-revanced's ExportControlsPatch + ExportControlsManifestPatch
 + ExportControlsResourcesPatch (commit ab43968) — translated from ReVanced
@@ -36,7 +36,7 @@ EXPORT
 IMPORT
 ------
   The "Import Layout" share-code dialog is skipped entirely: the shared
-  composition-time string resolver (Lqk8;->c0, hooked by
+  composition-time string resolver (Ly99;->c0, hooked by
   apply_menu_patches.py) detects the dialog title key and fires a SAF file
   picker (ACTION_OPEN_DOCUMENT) immediately — see
   BhMenuRowClick.maybeResolveCustomLabel, which calls
@@ -71,7 +71,7 @@ the other extension/ files):
   com.xj.winemu.exportcontrols.BhVjoyImporter
   com.xj.winemu.exportcontrols.BhVjoyJson
 
-Depends on apply_menu_patches.py having installed the Lqk8;->c0 resolver
+Depends on apply_menu_patches.py having installed the Ly99;->c0 resolver
 short-circuit (the import-dialog skip and all label relabels ride on it).
 """
 import base64
@@ -114,7 +114,7 @@ def die(msg):
 # See apply_vibration_patches.py for why the 6.0.4 ab8/bg5 probe is unusable
 # on 6.0.7 (letters reused). Anchor on the renamed app class instead.
 VERSION_PROBES = {
-    "6.0.8": (
+    "6.0.9": (
         "smali_classes3/com/xiaoji/egggame/AndroidApp.smali",
         "smali_classes3/com/winemu/core/gamepad/GamepadServerManager.smali",
     ),
@@ -295,8 +295,8 @@ def locate_caller(files, callee_ref, label):
     The (long gameId, String name) shape — NOT the total param count — is the
     device-verified invariant that pins this method AND justifies the p3
     register for captureShareName (a wide long occupies p1+p2, so the String
-    name lands at p3). 6.0.4 had 4 declared params here; 6.0.8's Lllm;->j has
-    5 (J, String, Z, Lp8m;, Continuation) — the extra params trail the String,
+    name lands at p3). 6.0.4 had 4 declared params here; 6.0.9's Lsun;->j has
+    5 (J, String, Z, Lvin;, Continuation) — the extra params trail the String,
     so p3 still holds. The other caller of the upload method (a 1-param
     coroutine SuspendLambda) is excluded by the param-shape requirement."""
     needle = callee_ref.encode("utf-8")
@@ -446,15 +446,15 @@ def patch_bytecode(root: Path) -> None:
         "captureShareName(Ljava/lang/String;)V\n"
     ), "share-name: captureShareName")
 
-    # --- Hooks 5-7: extend the Lqk8 resource-resolver short-circuit to the
+    # --- Hooks 5-7: extend the Ly99 resource-resolver short-circuit to the
     # non-Compose and format-args variants. apply_menu_patches.py installs the
-    # hook on Lqk8;->c0 (Compose stringResource, single key; 6.0.4 Lxd3;->l1);
+    # hook on Ly99;->c0 (Compose stringResource, single key; 6.0.4 Lxd3;->l1);
     # but the host also fetches resource strings via three sibling methods,
-    # all taking the same Lkwj; descriptor (6.0.4 Lell;):
+    # all taking the same Llok; descriptor (6.0.4 Lell;):
     #
-    #   d0(Lkwj;[Ljava/lang/Object;Leh3;I)Ljava/lang/String;  Compose + args (was m1)
-    #   J(Lkwj;Ljq3;)Ljava/lang/Object;                        suspend        (was P0)
-    #   K(Lkwj;[Ljava/lang/Object;Ljq3;)Ljava/lang/Object;     suspend + args (was Q0)
+    #   a0(Llok;[Ljava/lang/Object;Lgm3;I)Ljava/lang/String;  Compose + args (was m1)
+    #   G(Llok;Lov3;)Ljava/lang/Object;                        suspend        (was P0)
+    #   H(Llok;[Ljava/lang/Object;Lov3;)Ljava/lang/Object;     suspend + args (was Q0)
     #
     # The host's "Share failed: %1$s" toast (and other catch-site error
     # toasts) is fetched from a coroutine catch via Q0 — bypassing the l1
@@ -472,26 +472,26 @@ def patch_bytecode(root: Path) -> None:
 RESOLVER_HANDLER = "Lcom/xj/winemu/vibration/BhMenuRowClick;"
 
 EXTRA_RESOLVERS = (
-    (".method public static final d0(Lkwj;[Ljava/lang/Object;Leh3;I)Ljava/lang/String;",
+    (".method public static final a0(Llok;[Ljava/lang/Object;Lgm3;I)Ljava/lang/String;",
      "bh_m1_fallthrough",
-     "qk8.d0 (Compose stringResource with format args; was xd3.m1)"),
-    (".method public static final J(Lkwj;Ljq3;)Ljava/lang/Object;",
+     "y99.d0 (Compose stringResource with format args; was xd3.m1)"),
+    (".method public static final G(Llok;Lov3;)Ljava/lang/Object;",
      "bh_p0_fallthrough",
-     "qk8.J (suspend getString; was xd3.P0)"),
-    (".method public static final K(Lkwj;[Ljava/lang/Object;Ljq3;)Ljava/lang/Object;",
+     "y99.J (suspend getString; was xd3.P0)"),
+    (".method public static final H(Llok;[Ljava/lang/Object;Lov3;)Ljava/lang/Object;",
      "bh_q0_fallthrough",
-     "qk8.K (suspend getString with format args; was xd3.Q0)"),
+     "y99.K (suspend getString with format args; was xd3.Q0)"),
 )
 
 
 def patch_extra_resolvers(root: Path) -> None:
-    p = root / "smali_classes3" / "qk8.smali"
+    p = root / "smali_classes3" / "y99.smali"
     if not p.is_file():
-        die("smali_classes3/qk8.smali not found (apply_menu_patches.py must have run)")
+        die("smali_classes3/y99.smali not found (apply_menu_patches.py must have run)")
     for header, label, what in EXTRA_RESOLVERS:
         body = (
             f"    # BH: short-circuit non-Compose/format-args resource lookups\n"
-            f"    # the same way Lqk8;->c0 is short-circuited by the menu patch.\n"
+            f"    # the same way Ly99;->c0 is short-circuited by the menu patch.\n"
             f"    invoke-static {{p0}}, {RESOLVER_HANDLER}->"
             f"maybeResolveCustomLabelNoKick(Ljava/lang/Object;)Ljava/lang/String;\n"
             f"    move-result-object v0\n"
@@ -499,7 +499,7 @@ def patch_extra_resolvers(root: Path) -> None:
             f"    return-object v0\n"
             f"    :{label}\n"
         )
-        anchor = Anchor(path=p, cls="Lqk8;", header=header, params=[], ret="")
+        anchor = Anchor(path=p, cls="Ly99;", header=header, params=[], ret="")
         inject_at_entry(anchor, body, what)
 
 
@@ -588,6 +588,62 @@ def patch_cvr_locales(root: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Hide the stock "Upload original" checkbox row in the repurposed share dialog.
+#
+# We relabel GameHub's "Publish to Cloud" dialog to "Name Profile" for local
+# export, but its stock "Upload original" checkbox (a cloud-only control that
+# feeds the publish path interceptShare aborts) shows through and is confusing.
+# The dialog's sub-sections are each a separate Compose ComposableLambda
+# (Ldl7;->invoke); the "Upload original" row is the packed-switch branch whose
+# body carries the testTags "vjoy_share_upload"/"vjoy_share_upload_check" and
+# the prepare_share_upload_original string. That branch opens with Compose's
+# own skip check `Ljy8;->Y(IZ)Z` + `if-eqz vN, :cond_X`; the skip target runs
+# `Ljy8;->b0()` (skipToGroupEnd) and returns — the codegen-standard "this
+# composable was skipped" path. Forcing the branch ALWAYS to that skip path
+# (`if-eqz` -> `goto`) hides the row while keeping Compose's group/slot
+# accounting perfectly balanced (identical to a legitimate skip). The title,
+# name field, and Cancel/Confirm buttons are sibling composables, untouched.
+#
+# Fragile by nature (Compose layout, R8 letters): Ldl7; and the registers are
+# 6.0.9-specific and will shift on a base bump — fails loudly if the anchor
+# moves. The unique `if-eqz v1, :cond_6` + the `xor-int/lit8 v18, v11, 0x1`
+# trailer pin it unambiguously within dl7.smali.
+# ---------------------------------------------------------------------------
+
+def patch_hide_upload_original(root: Path) -> None:
+    p = root / "smali_classes4" / "dl7.smali"
+    if not p.is_file():
+        die("smali_classes4/dl7.smali not found (Upload-original row hide)")
+    src = read(p)
+    old = (
+        "    move-result v1\n"
+        "\n"
+        "    if-eqz v1, :cond_6\n"
+        "\n"
+        "    xor-int/lit8 v18, v11, 0x1\n"
+    )
+    new = (
+        "    move-result v1\n"
+        "\n"
+        "    # BH VJoy export: hide the stock \"Upload original\" checkbox row in\n"
+        "    # the repurposed \"Name Profile\" dialog. Force this sub-section\n"
+        "    # composable down Compose's own skip-to-group-end path so the row\n"
+        "    # never renders (group-balanced — identical to a legitimate skip).\n"
+        "    goto :cond_6\n"
+        "\n"
+        "    xor-int/lit8 v18, v11, 0x1\n"
+    )
+    if old not in src:
+        if new in src or "    goto :cond_6\n\n    xor-int/lit8 v18, v11, 0x1\n" in src:
+            print("OK: Upload-original row already hidden")
+            return
+        die("Upload-original hide anchor not found in dl7.smali (Ljy8;->Y skip "
+            "check / if-eqz v1, :cond_6 / xor-int/lit8 v18, v11, 0x1)")
+    write(p, src.replace(old, new, 1))
+    print("OK: dl7 (share dialog): hide \"Upload original\" checkbox row")
+
+
+# ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
 
@@ -613,6 +669,10 @@ def main():
 
     print("=== Bytecode hooks (URL-anchored) ===")
     patch_bytecode(root)
+    print()
+
+    print("=== Share dialog: hide stock 'Upload original' row ===")
+    patch_hide_upload_original(root)
     print()
 
     print("All VJoy export/import patches applied successfully.")

@@ -123,7 +123,7 @@ is no cloud upload, no "Cloud Backup Code" dialog, and no navigation to the
 cloud-share tab.
 
 **Import.** The "Import Layout" share-code dialog is skipped entirely. The
-shared `Lok8;->c0` resolver short-circuit (the same one that carries the menu
+shared `Ly99;->Z` resolver short-circuit (the same one that carries the menu
 labels) detects the dialog's title resource key at composition time and calls
 [BhVjoyShareHook.kickImportFromDialogOpen](extension/BhVjoyShareHook.java),
 which fires an `ACTION_OPEN_DOCUMENT` picker and dismisses the briefly-composed
@@ -152,19 +152,19 @@ if any anchor is missing or non-unique.
 ## Build
 
 CI workflow: `.github/workflows/build.yml` — triggers on `workflow_dispatch`
-or push of a `v*-6.0.8*` tag.
+or push of a `v*-6.0.9*` tag.
 
 One-time setup: upload the original GameHub APK as an asset on a release
-tagged `base-apk-6.0.8` in this repo (e.g.
-`GameHub_6.0.8_9652cc4861cdb16116a2929a74caaa62.apk`). The workflow
+tagged `base-apk-6.0.9` in this repo (e.g.
+`GameHub_6.0.9_ae6f18b57c111d3c4e5ce7c9932b5a66.apk`). The workflow
 `gh release download`s from there.
 
-`scripts/apply_vibration_patches.py` patches stock 6.0.8 using the
+`scripts/apply_vibration_patches.py` patches stock 6.0.9 using the
 ProGuard names `pz7` (Physical: rumble `h(II)V`, stop `g()V`) and `iqn`
 (env builder; the winebus disk-patch trigger rides its `<init>` ctor where
 the Context is still live, since 6.0.7 moved the env-var join out of the
 builder). Full anchor set and rename map are at the top of the script. Note
-6.0.8 strips `.line` debug directives from app code, so anchors are built
+6.0.9 strips `.line` debug directives from app code, so anchors are built
 from instruction sequences only.
 
 `scripts/apply_privacy_patches.py` is a port of the bannerhub-revanced
@@ -180,9 +180,9 @@ playtime UI renders empty (Steam's own playtime on your Steam profile
 is unaffected — Steam tracks playtime independently).
 
 `scripts/apply_menu_patches.py` injects the per-game "PC Vibration
-Settings" row into the three per-game menu surfaces (`La37;->a` game
-detail, `Lb8c;->f` library-tile popup, `Lhvb;->b0` library-list 3-dot),
-short-circuits the Compose resource resolver (`Lqk8;->c0`) for our label key, registers
+Settings" row into the three per-game menu surfaces (`Llc7;->a` game
+detail, `Lqqc;->f` library-tile popup, `Lxdc;->b0` library-list 3-dot),
+short-circuits the Compose resource resolver (`Ly99;->Z`) for our label key, registers
 [BhVibrationSettingsActivity](extension/BhVibrationSettingsActivity.java)
 in the manifest, and appends the CVR resource entry to each features.home
 locale bundle. Heavier R8 fragility than the other scripts — fails loudly
@@ -197,7 +197,7 @@ and injects four bytecode hooks (`interceptShare` at `shareMap`,
 `interceptApply` at `getMapByShareCode`, `interceptUpload` at `uploadGtheme`,
 `captureShareName` at the share-name method). Anchors by server-stable URL
 fragments and the upload call-relationship rather than R8 letters; the label
-relabels and the import-dialog skip reuse the `Lqk8;->c0` resolver
+relabels and the import-dialog skip reuse the `Ly99;->Z` resolver
 short-circuit installed by `apply_menu_patches.py`. Fails loudly if any anchor
 is missing or non-unique.
 
@@ -216,10 +216,10 @@ The pipeline:
    manifest activity + 4 URL-anchored bytecode hooks + CVR labels
 7. `apktool b`
 8. `javac + d8` of the `extension/Bh*.java` files → next free
-   `classesN.dex` slot (classes6 on 6.0.8's 5 stock dex files; computed
+   `classesN.dex` slot (classes6 on 6.0.9's 5 stock dex files; computed
    dynamically), inject into the APK
 9. `zipalign + apksigner` with `testkey.pk8` / `testkey.x509.pem`
-10. Upload as `GameScrub-6.0.8.apk`
+10. Upload as `GameScrub-6.0.9.apk`
 
 ## Project layout
 
@@ -229,7 +229,7 @@ extension/
                                    rows; SharedPreferences mirror crosses
                                    the main↔":wine" process boundary.
   BhMenuRowClick.java              Compose menu-row reflection helpers
-                                   (Lwyc / Lj6c / Lvtc ctors) + Lqk8.c0
+                                   (Luhd / Lxoc / Lpcd ctors) + Ly99.Z
                                    resolver short-circuit + click handler
                                    that launches BhVibrationSettingsActivity
                                    scoped to BhMenuGameId.getCaptured().
@@ -256,7 +256,7 @@ extension/
 
 scripts/
   apply_vibration_patches.py       smali hooks against a decompiled
-                                   GameHub 6.0.8 apktool tree.
+                                   GameHub 6.0.9 apktool tree.
   apply_privacy_patches.py         manifest + smali + native-lib edits
                                    that kill Firebase / GMS Measurement
                                    / Mob Push / XiaoJi events + heartbeat
