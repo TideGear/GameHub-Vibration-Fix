@@ -174,7 +174,7 @@ jobs:
           # onCreate anchor is missing or non-unique.
           python3 scripts/apply_update_check_patches.py apktool_out
 
-      - name: Build PC engine plugin shadow dex (dual-motor rumble)
+      - name: Build PC engine plugin shadow dex (dual-motor rumble + telemetry kill)
         if: steps.plugin.outputs.have_plugin == '1'
         run: |
           set -e
@@ -187,6 +187,10 @@ jobs:
           PLUGIN_APK=$(ls plugin/*.apk | head -1)
           java -jar $HOME/bin/apktool.jar d "$PLUGIN_APK" -o plugin_out -f
           python3 scripts/apply_plugin_rumble_patches.py plugin_out
+          # Privacy: the device-performance telemetry channel that 6.0.9 stubbed
+          # in the base APK moved into this plugin (per-session fps/power/RAM/GPU
+          # profile tied to user_id + gameId, uploaded on activity destroy).
+          python3 scripts/apply_plugin_privacy_patches.py plugin_out
           mkdir -p apktool_out/assets
           python3 scripts/build_plugin_shadow_dex.py \
               plugin_out apktool_out/assets/bh_pcengine_shadow.dex \

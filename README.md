@@ -36,9 +36,20 @@ What you get over stock GameHub:
   endpoint, and the JieLi OTA phone-home. Steam / GOG / Epic / Wine /
   account login are untouched. Full channel list in
   [scripts/apply_privacy_patches.py](scripts/apply_privacy_patches.py).
-  (6.1.1 shrank this surface upstream: `heartbeat/game/update`,
-  `heartbeat/game/end` and the `/events` perf-config sibling no longer exist,
-  so there is less left to kill.)
+  (6.1.1 shrank part of this surface upstream: `heartbeat/game/update` and
+  `heartbeat/game/end` no longer exist.) It also kills a channel that only
+  appears in 6.1.1 — see below.
+- **Device-performance telemetry kill (6.1.1).** The perf channel 6.0.9 stubbed
+  in the base APK did not go away; it moved into the downloaded PC-engine plugin
+  and got a successor. On stock 6.1.1, every game session assigns a UUID and
+  samples **fps, power draw, RAM (MB/percent/total) and GPU percent every ~10 s**,
+  then uploads a summary carrying `event_type=device_perf_session_summary`,
+  `user_id`, `gameId` and `sourceGameId` when the game closes (verified from
+  device logs, which also show `summaryOnly=true legacyUpload=false` — i.e. the
+  old endpoint is off and this replaced it). GameScrub stubs the uploader
+  (`Lxjp/mv1;->c`) through the same shadow dex used for dual-motor, so the
+  plugin APK is never modified. Sampling and local summary storage still run;
+  nothing is sent.
 - **Dual-motor low/high dispatch.** *(offline on 6.1.1 — see the note above.)*
   Wine games calling `XInputSetState(slot, low, high)` get the two motors
   driven independently via Android `CombinedVibration.startParallel` on

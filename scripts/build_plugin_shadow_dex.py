@@ -36,13 +36,19 @@ from pathlib import Path
 
 # Keep this list minimal — see the module docstring.
 SHADOW_CLASSES = [
+    # dual-motor rumble (apply_plugin_rumble_patches.py)
     "smali/com/winemu/core/gamepad/GamepadServerManager.smali",
     "smali/xjp/fi3.smali",
+    # device-performance telemetry kill (apply_plugin_privacy_patches.py)
+    "smali/xjp/mv1.smali",
 ]
 
 # Marker proving the sources were patched; refuse to ship an unpatched shadow
-# (it would be a pure no-op that silently costs us the dual-motor fix).
-PATCH_MARKER = "Lcom/xj/winemu/vibration/BhVibrationController;"
+# (it would be a pure no-op that silently costs us the fix it was built for).
+# A generic "# BH" comment rather than a specific handler reference, because not
+# every shadow class calls back into our extension — the telemetry stub just
+# early-returns the host's own result type.
+PATCH_MARKER = "# BH"
 
 MANIFEST = ('<?xml version="1.0" encoding="utf-8"?>\n'
             '<manifest xmlns:android="http://schemas.android.com/apk/res/android"'
@@ -95,9 +101,10 @@ def main():
                 die(f"shadow class missing from the plugin tree: {rel}")
             text = src.read_text(encoding="utf-8", errors="replace")
             if PATCH_MARKER not in text:
-                die(f"{rel} does not reference {PATCH_MARKER} — run "
-                    f"apply_plugin_rumble_patches.py first; refusing to build an "
-                    f"unpatched shadow dex.")
+                die(f"{rel} carries no {PATCH_MARKER!r} marker — run "
+                    f"apply_plugin_rumble_patches.py and "
+                    f"apply_plugin_privacy_patches.py first; refusing to build "
+                    f"an unpatched shadow dex.")
             dst = work / rel
             dst.parent.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(src, dst)
