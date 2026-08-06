@@ -212,16 +212,12 @@ jobs:
           # → classes5; 6.0.9 had 5 → classes6.)
           ANDROID_JAR=$(ls $ANDROID_SDK_ROOT/platforms/android-*/android.jar 2>/dev/null | sort -V | tail -1)
           mkdir -p ext_classes
+          # Compile the whole directory rather than an explicit file list. The
+          # list silently rotted when BhPluginShadow.java was added: local builds
+          # used extension/*.java and passed, CI kept its stale list and failed
+          # with "cannot find symbol: class BhPluginShadow". A glob cannot drift.
           javac -source 8 -target 8 -cp "$ANDROID_JAR" -d ext_classes \
-              extension/BhVibrationController.java \
-              extension/BhVibrationSettingsActivity.java \
-              extension/BhMenuGameId.java \
-              extension/BhMenuRowClick.java \
-              extension/BhSafProxyActivity.java \
-              extension/BhVjoyShareHook.java \
-              extension/BhVjoyImporter.java \
-              extension/BhVjoyJson.java \
-              extension/BhSteamUpdateChecker.java
+              extension/*.java
           BUILD_TOOLS=$(ls $ANDROID_SDK_ROOT/build-tools | sort -V | tail -1)
           mkdir -p ext_dex
           $ANDROID_SDK_ROOT/build-tools/$BUILD_TOOLS/d8 \
