@@ -542,12 +542,28 @@ def patch_analytics_events(root: Path) -> None:
     result type, so we early-return a synthetic success of that type before any
     URL string is allocated or the HTTP client is touched.
 
-    6.1.1 DROPPED the perf-config channel: there is no
-    /events/device-performance-config endpoint (nor the renamed
-    device-performance-session-summary 6.0.9 shipped) anywhere in the APK, so
-    the 6.0.9 Lqv4;->b stub and its synthetic Lk9m; snapshot are retired rather
-    than re-anchored. If a future base reintroduces it, the stub shape to
-    restore is in git history."""
+    The perf-config channel is not in the BASE APK on 6.1.1, so the 6.0.9
+    Lqv4;->b stub and its synthetic Lk9m; snapshot are retired here (the shape
+    is in git history if a future base reintroduces it).
+
+    !!! IT IS NOT GONE — IT MOVED INTO THE PC-ENGINE PLUGIN AND IS NOT YET
+    KILLED. Device-log evidence from stock 6.1.1: `DevicePerformanceReporter`
+    (tag WinEmuModule, :pcengine process) starts a per-session UUID on game
+    launch, samples fps / power draw / RAM MB+percent+total / GPU percent every
+    ~10 s, and on activity-destroy `DevicePerfSessionSummaryUploader` POSTs a
+    summary batch carrying event_type=device_perf_session_summary, user_id,
+    gameId and sourceGameId ("upload success" observed). It logs
+    `summaryOnly=true legacyUpload=false`, i.e. this is the SUCCESSOR to the
+    6.0.9 endpoint — the old one is disabled and this replaced it.
+
+    In the plugin tree: Lxjp/bv1; is the DTO (device_perf_session_summary),
+    Lxjp/gv1; the repository (device_perf_session_summary_v1), Lxjp/hv1; and
+    Lxjp/iv1; the upload log lambdas.
+
+    Killing it needs a plugin-side stub delivered through the shadow dex — add
+    the uploader to SHADOW_CLASSES in build_plugin_shadow_dex.py and stub it in
+    apply_plugin_rumble_patches.py (which already patches plugin classes without
+    touching base.apk). Not done yet; see the README privacy section."""
     prepend_to_method(
         root / "smali_classes3/l88.smali",
         ".method public final a(Ljava/util/Collection;"

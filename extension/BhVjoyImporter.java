@@ -11,74 +11,148 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
 
 /**
- * Local-save side of the VJoy file-import pipeline.
+ * Local-save side of the VJoy file-import pipeline. Ported to GameHub 6.1.1.
  *
  * Pipeline:
  *   1. Caller hands us the raw bytes of a {@code .gtheme} file (a ZIP
  *      archive containing a single {@code layout.json} entry — Xiaoji's
- *      own shareable format, produced by our pre9 export).
+ *      own shareable format, produced by our export).
  *   2. We ZIP-unwrap to get the layout JSON bytes.
- *   3. Deserialize JSON to a {@code VJoyLayout} via kotlinx-serialization
- *      reflection (the class FQN is kept by R8 keep-rules).
- *   4. Generate a fresh UUID as the layoutId for the imported copy.
- *   5. Invoke the host's static save helper
- *        {@code Lo0n;->i(String, VJoyLayout, Continuation): Object}
- *      via reflection — it wraps the actual save coroutine
- *      ({@code Lm0n;}) in {@code withContext(Dispatchers.IO, ...)}.
+ *   3. Deserialize JSON to a host VJoyLayout ({@code Ltvr;} on 6.1.1) via
+ *      the host's OWN configured kotlinx Json instance — the plain
+ *      {@code Json.Default} cannot decode it (InputMapping / ControlAction
+ *      are polymorphic and only the host's SerializersModule registers
+ *      them; see {@code Lzzr;-><clinit>}).
+ *   4. Use the JSON's own {@code id} as the layoutId (see below).
+ *   5. Run the host's save coroutine block directly through
+ *      {@code kotlinx.coroutines.BuildersKt.withContext(Dispatchers.IO, block, cont)}.
+ *      The host's own facade is {@code Lc0s;->i(String, Ltvr;, ContinuationImpl)},
+ *      but its declared 3rd-arg type is the ABSTRACT ContinuationImpl class,
+ *      which Java reflection will not accept our Continuation Proxy for — so
+ *      we reproduce its two-line body instead (see saveLayoutLocal).
  *   6. Block on a {@link CompletableFuture} that our synthetic
  *      Continuation completes from {@code resumeWith()}.
- *   7. Return the resulting {@code VJoyLayoutSaveReceipt} (or null on
- *      failure).
+ *   7. Insert the {@code virtual_key_layout} row so My Layouts shows it,
+ *      then nudge Room's invalidation tracker for a live refresh.
  *
- * Reflection anchors (R8-renamed; these letters need re-derivation on
- * each GameHub minor bump):
- *   - {@link #WITH_CONTEXT_CLASS} = "dig"     — has static `V(...)` =
- *                                              withContext (6.0.4 w0o.s0;
- *                                              the bgl.i/o0n.i wrapper is
- *                                              bypassed, see saveLayoutLocal)
- *   - {@link #DISPATCHER_HOLDER}  = "n80"     — static field `a:Li84;`
- *                                              is Dispatchers.IO (6.0.4 f80)
- *   - {@link #SAVE_BLOCK_CLASS}   = "ggl"     — the save-coroutine state
- *                                              class; ctor takes
- *                                              (String, VJoyLayout, Ljq3;)
- *                                              (6.0.4 m0n)
- *   - {@link #CONTINUATION_INTERFACE} = "jq3" — the R8-renamed
- *                                              kotlin.coroutines.Continuation
- *                                              (6.0.4 bi3)
+ * ── Reflection anchors, GameHub 6.1.1 ─────────────────────────────────
+ * 6.1.1 no longer obfuscates the Kotlin / kotlinx.coroutines /
+ * kotlinx.serialization / androidx.room3 / androidx.sqlite runtimes, so
+ * everything below is a real name EXCEPT the four app-owned R8 letters,
+ * which must be re-derived on every base bump:
+ *
+ *   {@link #SAVE_BLOCK_CLASS} = "f8n" + {@link #SAVE_BLOCK_CASE} = 0x14
+ *       The save coroutine. On 6.1.1 R8 HORIZONTALLY MERGED 29 unrelated
+ *       suspend lambdas into one class discriminated by an int field `a`,
+ *       so the class alone is not enough — the case number is part of the
+ *       anchor. Evidence: smali_classes3/f8n.smali, ctor
+ *       `<init>(Object, Object, Continuation, I)` (b = layoutId String,
+ *       c = layout), and `invokeSuspend`'s `:pswitch_8` block (= packed
+ *       index 20 = 0x14) is the 1:1 port of 6.0.9's `Lqpm;->invokeSuspend`:
+ *       same "assets"/"layout.json"/"preview.png"/"vjoy_layouts/" strings,
+ *       same FNV-1a constants 0x14650fb0739d0383 / 0x100000001b3, same
+ *       13-arg save-receipt ctor. Cross-checked against the host's own call
+ *       site smali_classes3/c0s.smali `i()`:
+ *           sget-object v0, Lkj0;->a           ; = Dispatchers.getIO()
+ *           new-instance v1, Lf8n;
+ *           const/16 v3, 0x14
+ *           invoke-direct {v1, p0, p1, v2, v3}, Lf8n;-><init>(...)
+ *           BuildersKt->withContext(v0, v1, p2)
+ *       (6.0.9 "qpm"; 6.0.4 "m0n")
+ *
+ *   {@link #VJOY_LAYOUT_CLASS} = "tvr"
+ *       The VJoyLayout data class. The 6.0.9 FQN
+ *       com.xiaoji.egggame.common.ui.vjoy.model.VJoyLayout is gone — that
+ *       whole package is obfuscated away in 6.1.1. PROOF that tvr is it:
+ *       its generated serializer smali_classes2/rvr.smali still carries
+ *       the descriptor serialName string
+ *       "com.xiaoji.egggame.common.ui.vjoy.model.VJoyLayout" plus the
+ *       element names formatVersion/id/name/description/meta/settings/
+ *       controls/layers/activeLayerIndex/nextLayerIndex, and its
+ *       `serialize` does `check-cast p2, Ltvr;`. Field order in
+ *       smali_classes2/tvr.smali `<init>(I,String,Lr2g;,Lr2g;,Map,Ln0s;,
+ *       List,List,I,I)` matches 6.0.9's VJoyLayout ctor exactly, so
+ *       a=formatVersion, b=id, c=name, d=description, …
+ *       Re-derive with: grep for that serialName string, then read the
+ *       serializer's `serialize` check-cast.
+ *
+ *   {@link #VJOY_JSON_HOLDER} = "c0s" (static field "a") — the host's
+ *       configured Json for layouts (6.0.9
+ *       VJoyLayoutJson.Default). Evidence: smali_classes3/c0s.smali
+ *       `<clinit>` does `sput Lzzr;->b -> Lc0s;->a`, and BOTH the save
+ *       block (f8n case 0x14) and the host's own pack-import
+ *       (`Lc0s;->a(Lsoi;)`) use `Lc0s;->a` for encodeToString /
+ *       decodeFromString. Fallback anchor {@link #VJOY_JSON_HOLDER_ALT}
+ *       "zzr" field "b" is the same object one hop upstream; `Lzzr;->a`
+ *       is the polymorphic SerializersModule it is built from.
+ *
+ *   {@link #APP_DATABASE_CLS} — still a kept FQN on 6.1.1
+ *       (smali_classes2/com/xiaoji/egggame/core/database/AppDatabase.smali),
+ *       but its DAO getters are now single letters c()..o() and the
+ *       generated DAO impls have NO methods at all (R8 moved every query
+ *       into per-query merged suspend lambdas), so the 6.0.9 DAO-reflection
+ *       nudge is dead. See nudgeRoomInvalidation for the replacement, which
+ *       uses only kept androidx.room3 / androidx.sqlite names.
  *
  * All paths fail-soft: on any reflection / parse / save error we log and
- * return null. The caller (BhVjoyShareHook#interceptApply) toasts a
+ * return null/false. The caller (BhVjoyShareHook#interceptApply) toasts a
  * generic error.
  */
 public final class BhVjoyImporter {
 
     private static final String TAG = "BhVjoyImporter";
 
-    // === R8-mangled anchors (GameHub 6.0.9; 6.0.4 letters in parens) ===
-    private static final String WITH_CONTEXT_CLASS    = "g8i";  // BuildersKt (has L = withContext; 6.0.4 w0o.s0)
-    private static final String WITH_CONTEXT_METHOD   = "L";    // withContext method name (6.0.8 "V"; 6.0.4 "s0")
-    private static final String DISPATCHER_HOLDER     = "u90";  // Dispatchers (has a = IO; 6.0.4 f80)
-    private static final String COROUTINE_CONTEXT_IF  = "yy3";  // CoroutineContext interface, first arg type (6.0.4 dm3)
-    private static final String FUNCTION2_IF          = "h57";  // Function2 interface, block param (6.0.4 dx6)
+    // === Coroutine bridge (GameHub 6.1.1 keeps the Kotlin runtime
+    //     unobfuscated — real names. Shared with BhSteamUpdateChecker;
+    //     keep the two in sync on a base bump.) ===
+    private static final String WITH_CONTEXT_CLASS     = "kotlinx.coroutines.BuildersKt";
+    private static final String WITH_CONTEXT_METHOD    = "withContext";
+    private static final String COROUTINE_CONTEXT_IF   = "kotlin.coroutines.CoroutineContext";
+    private static final String FUNCTION2_IF           = "kotlin.jvm.functions.Function2";
     // Continuation INTERFACE (getContext()+resumeWith) — what the Proxy must
-    // implement. 6.0.4 bi3. NB: NOT pv3 (that is ContinuationImpl, the
-    // abstract class, = 6.0.4 ci3 — a Proxy can't implement it).
-    private static final String CONTINUATION_INTERFACE = "ov3";
-    private static final String SAVE_BLOCK_CLASS      = "qpm";  // suspend lambda; ctor (String, VJoyLayout, Continuation) (6.0.4 m0n)
-    private static final String VJOY_LAYOUT_FQN =
-        "com.xiaoji.egggame.common.ui.vjoy.model.VJoyLayout";
+    // implement. NOT kotlin.coroutines.jvm.internal.ContinuationImpl (an
+    // abstract class; a Proxy can't implement it).
+    private static final String CONTINUATION_INTERFACE = "kotlin.coroutines.Continuation";
+    private static final String DISPATCHER_HOLDER      = "kotlinx.coroutines.Dispatchers";
+    // Dispatchers.getIO() — a METHOD, not a field. On 6.1.1 the static field
+    // `Dispatchers.a` is Default, so the old field read would silently
+    // dispatch the file-IO save on the CPU pool. The host itself caches
+    // getIO() in Lkj0;->a (verified: kj0.<clinit> calls Dispatchers.getIO()).
+    private static final String DISPATCHER_IO_METHOD    = "getIO";
 
-    // Kept (non-obfuscated) host DB FQNs, used by the post-import Room
-    // invalidation nudge that restores the live My Layouts refresh on 6.0.9
-    // (see nudgeRoomInvalidation). These names are R8-keep-stable.
+    // === App-owned R8 letters (re-derive every base bump; see class doc) ===
+    /** Merged suspend-lambda class holding the VJoy save coroutine. */
+    private static final String SAVE_BLOCK_CLASS = "f8n";
+    /** Which merged case inside SAVE_BLOCK_CLASS is the save coroutine. */
+    private static final int    SAVE_BLOCK_CASE  = 0x14;
+    /** The VJoyLayout data class (6.0.9: an FQN; 6.1.1: obfuscated). */
+    private static final String VJOY_LAYOUT_CLASS = "tvr";
+    /** Holder of the host's layout Json; static field VJOY_JSON_FIELD. */
+    private static final String VJOY_JSON_HOLDER  = "c0s";
+    private static final String VJOY_JSON_FIELD   = "a";
+    /** Same Json one hop upstream, used if the primary anchor moves. */
+    private static final String VJOY_JSON_HOLDER_ALT = "zzr";
+    private static final String VJOY_JSON_FIELD_ALT  = "b";
+
+    // === Kept host / library FQNs ===
     private static final String APP_DATABASE_CLS =
         "com.xiaoji.egggame.core.database.AppDatabase";
-    private static final String VKL_DAO_CLS =
-        "com.xiaoji.egggame.core.database.dao.VirtualKeyLayoutDao";
-    private static final String VKL_ENTITY_CLS =
-        "com.xiaoji.egggame.core.database.entity.VirtualKeyLayoutEntity";
-    /** Koin's Java interop entrypoint: get(Class) resolves a single by Java type. */
+    private static final String ROOM_DATABASE_CLS = "androidx.room3.RoomDatabase";
+    private static final String ROOM_DBUTIL_CLS   = "androidx.room3.util.DBUtil";
+    private static final String ROOM_TRACKER_CLS  = "androidx.room3.InvalidationTracker";
+    private static final String SQLITE_CONN_CLS   = "androidx.sqlite.SQLiteConnection";
+    private static final String SQLITE_KT_CLS     = "androidx.sqlite.SQLite";
+    /**
+     * Koin's Java interop entrypoint. NB: on 6.1.1 R8 stripped every
+     * overload except {@code getOrNull$default(Class, Qualifier, Function0,
+     * int mask, Object)} — the 6.0.9 {@code get(Class)} no longer exists
+     * (verified: smali_classes3/org/koin/java/KoinJavaComponent.smali has
+     * exactly one method). mask 0x2|0x4 = "use defaults for qualifier and
+     * parameters".
+     */
     private static final String KOIN_JAVA_COMPONENT = "org.koin.java.KoinJavaComponent";
+    private static final String KOIN_GET_OR_NULL    = "getOrNull$default";
+    private static final int    KOIN_DEFAULTS_MASK  = 0x2 | 0x4;
 
     /** Save coroutine can take a while (file IO + index update). */
     private static final long SAVE_TIMEOUT_SECONDS = 30L;
@@ -111,7 +185,7 @@ public final class BhVjoyImporter {
             Log.i(TAG, "JSON head: " + json.substring(0, head));
             Log.i(TAG, "JSON tail: " + json.substring(json.length() - tail));
 
-            Object layout = BhVjoyJson.decodeLayout(json);
+            Object layout = decodeLayout(json);
             if (layout == null) {
                 Log.w(TAG, "could not deserialize VJoyLayout from JSON");
                 return false;
@@ -132,7 +206,7 @@ public final class BhVjoyImporter {
             // overwrites the previous import (same id → same folder).
             // Acceptable; matches the host's "copy" suffix convention
             // for duplicates.
-            String layoutId = readLayoutId(layout);
+            String layoutId = readLayoutId(json, layout);
             if (layoutId == null || layoutId.isEmpty()) {
                 layoutId = UUID.randomUUID().toString();
                 Log.w(TAG, "no id in layout JSON; falling back to UUID " + layoutId);
@@ -148,14 +222,15 @@ public final class BhVjoyImporter {
 
             // The save coroutine writes layout.json + assets/ to disk but
             // does NOT register the layout in egggame.db's virtual_key_layout
-            // table — the host's Create flow registers via its Lytm
-            // ViewModel which dispatches an insert command. Without that
-            // row, the layout is invisible in My Layouts.
+            // table — the host's Create flow registers separately, through
+            // its own ViewModel's insert command. Without that row, the
+            // layout is invisible in My Layouts.
             //
             // Direct DB insert mirrors what the Create flow writes:
             //   source=local, catalog=local, acquire=created, etc.
-            // See virtual_key_layout schema dump for column meanings.
-            boolean registered = registerInDatabase(layoutId, layout, receipt);
+            // Column set verified against 6.1.1's CREATE TABLE in
+            // smali_classes3/yi0.smali (see registerInDatabase).
+            boolean registered = registerInDatabase(layoutId, json, layout, receipt);
             if (!registered) {
                 Log.w(TAG, "DB insert failed (layout still on disk, " +
                     "may be picked up later by host's rebuild path)");
@@ -169,19 +244,98 @@ public final class BhVjoyImporter {
     }
 
     /**
+     * Deserialize the layout JSON into a host layout instance.
+     *
+     * MUST use the host's own configured Json ({@link #VJOY_JSON_HOLDER}),
+     * not {@code Json.Default}: InputMapping and ControlAction are
+     * polymorphic sealed hierarchies whose subclass registrations live in
+     * the host's SerializersModule ({@code Lzzr;->a}), and a bare Json
+     * throws SerializationException on the {@code "class"} discriminator.
+     *
+     * Falls back to {@link BhVjoyJson#decodeLayout(String)} (the 6.0.9-era
+     * path, which resolves the layout by its old FQN) so this keeps working
+     * if a future base restores the unobfuscated names.
+     */
+    private static Object decodeLayout(String json) {
+        try {
+            Class<?> layoutCls = Class.forName(VJOY_LAYOUT_CLASS);
+            Field companionField = layoutCls.getDeclaredField("Companion");
+            companionField.setAccessible(true);
+            Object companion = companionField.get(null);
+            if (companion == null) {
+                throw new IllegalStateException(VJOY_LAYOUT_CLASS + ".Companion is null");
+            }
+            // Ltvr;->Companion is Lsvr;, whose single method serializer() kept
+            // its real name (kotlinx keep-rules).
+            Method serializerM = companion.getClass().getMethod("serializer");
+            serializerM.setAccessible(true);
+            Object serializer = serializerM.invoke(companion);
+
+            Object hostJson = hostLayoutJson();
+            if (hostJson == null) {
+                throw new IllegalStateException("host layout Json not resolvable");
+            }
+            // kotlinx.serialization.json.Json#decodeFromString(
+            //     DeserializationStrategy, String): Object — real names on 6.1.1.
+            Class<?> jsonCls = Class.forName("kotlinx.serialization.json.Json");
+            Class<?> deserCls = Class.forName("kotlinx.serialization.DeserializationStrategy");
+            Method decode = jsonCls.getDeclaredMethod(
+                "decodeFromString", deserCls, String.class);
+            decode.setAccessible(true);
+            Object layout = decode.invoke(hostJson, serializer, json);
+            if (layout != null) return layout;
+            Log.w(TAG, "decodeFromString returned null");
+        } catch (Throwable t) {
+            Log.w(TAG, "direct decode failed, trying BhVjoyJson fallback", t);
+        }
+        return BhVjoyJson.decodeLayout(json);
+    }
+
+    /**
+     * The host's configured layout Json instance. Primary anchor is
+     * {@code Lc0s;->a} (what the save block and the host's own pack-import
+     * both use); {@code Lzzr;->b} is the identical object one hop upstream.
+     */
+    private static Object hostLayoutJson() {
+        Object v = staticField(VJOY_JSON_HOLDER, VJOY_JSON_FIELD);
+        if (v != null) return v;
+        Log.w(TAG, VJOY_JSON_HOLDER + "." + VJOY_JSON_FIELD
+            + " unavailable; trying " + VJOY_JSON_HOLDER_ALT);
+        return staticField(VJOY_JSON_HOLDER_ALT, VJOY_JSON_FIELD_ALT);
+    }
+
+    /** Read a static field, or null if the class/field/value is missing. */
+    private static Object staticField(String clsName, String fieldName) {
+        try {
+            Field f = Class.forName(clsName).getDeclaredField(fieldName);
+            f.setAccessible(true);
+            return f.get(null);
+        } catch (Throwable t) {
+            return null;
+        }
+    }
+
+    /**
      * Insert a row into egggame.db's virtual_key_layout table so the
      * imported layout appears in My Layouts. Mirrors the columns the
      * host's Create flow writes (source=local, catalog=local,
      * acquire=created).
      *
+     * The 32-column virtual_key_layout schema is BYTE-IDENTICAL between
+     * 6.0.9 and 6.1.1 (diffed the CREATE TABLE in 6.0.9
+     * smali_classes3/l90.smali against 6.1.1 smali_classes3/yi0.smali), so
+     * the column set below is unchanged by the 6.1.1 port. Every NOT NULL
+     * column is written; `id` is left to AUTOINCREMENT.
+     *
      * The host has the DB open in WAL mode; opening a second read-write
      * connection via SQLiteDatabase.openDatabase() is fine — SQLite is
-     * multi-connection safe. The host's Room invalidation tracker may
-     * not pick up our write in real-time, so the user must close +
-     * reopen My Layouts (or restart the app) to see the new row.
+     * multi-connection safe, and Room's invalidation triggers are TEMP
+     * (connection-local, see nudgeRoomInvalidation) so our connection
+     * never trips a missing-temp-table error. The flip side is that Room
+     * cannot see our write, hence the nudge.
      */
     private static boolean registerInDatabase(
-            String layoutId, Object layout, Object saveReceipt) {
+            String layoutId, String layoutJson, Object layout, Object saveReceipt) {
         android.database.sqlite.SQLiteDatabase db = null;
         long insertedRowId = -1;
         String insertedUserId = null;
@@ -226,10 +380,10 @@ public final class BhVjoyImporter {
 
             // Pull values for the row.
             long now = System.currentTimeMillis();
-            String name = readLayoutName(layout);
+            String name = readLayoutName(layoutJson, layout);
             if (name == null || name.isEmpty()) name = "Imported Layout";
             String titleI18n = "{\"default\":" + jsonString(name) + "}";
-            String configHash = readReceiptString(saveReceipt, "getConfigHash");
+            String configHash = readConfigHash(saveReceipt);
 
             android.content.ContentValues v = new android.content.ContentValues();
             v.put("user_id",              userId);
@@ -279,10 +433,11 @@ public final class BhVjoyImporter {
             if (db != null) try { db.close(); } catch (Throwable ignored) { }
         }
         // Our raw write is committed and our second connection is closed.
-        // Route a real write through the host's own Room so its (2.7)
-        // connection-scoped invalidation tracker fires and the live My
-        // Layouts list refreshes immediately. 6.0.4's older Room observed our
-        // external raw write; 6.0.7+'s does not (the regression the user hit).
+        // Route a real write through the host's own Room (androidx.room3 on
+        // 6.1.1) so its connection-scoped invalidation tracker fires and the
+        // live My Layouts list refreshes immediately. 6.0.4's older Room
+        // observed our external raw write; 6.0.7+ does not (the regression the
+        // user hit) because the tracker's bookkeeping table is TEMP.
         nudgeRoomInvalidation(insertedUserId, insertedRowId);
         return true;
     }
@@ -292,13 +447,43 @@ public final class BhVjoyImporter {
      * live My Layouts list (a Room Flow on observeMyLayoutsRevision) re-emits
      * right after an import — instead of only when the screen is re-entered.
      *
-     * Mechanism: resolve the host's AppDatabase from Koin, read our
-     * just-inserted row back via the DAO's findById(user_id, id), and re-
-     * upsert it. That UPDATE goes through Room's own SQLiteConnection, so its
-     * 2.7 invalidation tracker fires (a 0-row no-op would NOT fire the table
-     * trigger, which is why we re-write a real row rather than poke a bogus
-     * id). All names used here are R8-keep-stable host FQNs; the suspend DAO
-     * calls reuse the same Continuation/await bridge as saveLayoutLocal.
+     * WHY A NUDGE IS NEEDED AT ALL. Room's trigger-based tracker keeps its
+     * bookkeeping in a TEMP table: {@code CREATE TEMP TABLE IF NOT EXISTS
+     * room_table_modification_log} (verified in smali/m4r.smali). TEMP objects
+     * are per-connection, so the row we insert on our OWN SQLiteDatabase
+     * connection can never flip Room's `invalidated` flag — calling
+     * refreshAsync() alone would find nothing. A real write on ROOM's
+     * connection is required.
+     *
+     * 6.0.9 did that through the generated DAO (findById + upsert). That is
+     * impossible on 6.1.1: the layout DAO impl {@code Ldet;} (returned by
+     * {@code AppDatabase->n()}) declares ONLY a constructor — R8 moved every
+     * query into per-query merged suspend lambdas such as
+     * smali_classes2/cet.smali, whose ctor is (String, J, Ldet;, Continuation, I).
+     * Both {@code VirtualKeyLayoutDao} and {@code VirtualKeyLayoutEntity} FQNs
+     * are gone.
+     *
+     * Replacement uses only KEPT library names — no R8 letters:
+     *   androidx.room3.util.DBUtil#performSuspending(
+     *       RoomDatabase, boolean isReadOnly, boolean inTransaction,
+     *       Function2&lt;SQLiteConnection, Continuation, Object&gt;, Continuation)
+     * with isReadOnly=false and inTransaction=TRUE. Those two flags are not
+     * cosmetic: in the block Room finally runs (smali_classes3/ms3.smali,
+     * merged case a=1) the `inTransaction` field gates the whole path —
+     * `if-eqz` on it jumps to a branch with NO invalidation — while
+     * `isReadOnly` gates the trailing
+     *     RoomDatabase->a()  (= getInvalidationTracker)
+     *     InvalidationTracker->b()  (= refreshAsync, the coroutine named
+     *                                 "Room Invalidation Tracker Refresh")
+     * so only (false, true) both writes through Room's connection AND
+     * refreshes. Our Function2 Proxy receives the real
+     * androidx.sqlite.SQLiteConnection (chain verified through smali/ej5.smali
+     * case a=0: `check-cast p1, Landroidx/sqlite/SQLiteConnection;`), and
+     * androidx.sqlite.SQLite#execSQL(SQLiteConnection, String) is a plain
+     * non-suspend call, so the block completes synchronously.
+     *
+     * The UPDATE has to touch a real row: SQLite fires an AFTER UPDATE
+     * trigger per matched row, so a 0-row statement would invalidate nothing.
      *
      * Best-effort: any failure just logs and leaves the prior behavior
      * (layout still saved; visible after re-entering My Layouts).
@@ -306,38 +491,58 @@ public final class BhVjoyImporter {
     private static void nudgeRoomInvalidation(String userId, long rowId) {
         if (userId == null || userId.isEmpty() || rowId <= 0) return;
         try {
-            Class<?> appDbCls = Class.forName(APP_DATABASE_CLS);
-            Object appDb = Class.forName(KOIN_JAVA_COMPONENT)
-                .getMethod("get", Class.class).invoke(null, appDbCls);
+            Object appDb = resolveAppDatabase();
             if (appDb == null) {
                 Log.w(TAG, "nudge: AppDatabase not resolvable from Koin");
                 return;
             }
-            Object dao = appDbCls.getMethod("virtualKeyLayoutDao").invoke(appDb);
-            if (dao == null) { Log.w(TAG, "nudge: virtualKeyLayoutDao null"); return; }
 
-            Class<?> daoCls = Class.forName(VKL_DAO_CLS);
-            Class<?> entityCls = Class.forName(VKL_ENTITY_CLS);
-            Class<?> contCls = Class.forName(CONTINUATION_INTERFACE);
-            Object dispatcher = Class.forName(DISPATCHER_HOLDER)
-                .getDeclaredField("a").get(null);
+            Class<?> roomDbCls   = Class.forName(ROOM_DATABASE_CLS);
+            Class<?> dbUtilCls   = Class.forName(ROOM_DBUTIL_CLS);
+            Class<?> connCls     = Class.forName(SQLITE_CONN_CLS);
+            Class<?> sqliteKtCls = Class.forName(SQLITE_KT_CLS);
+            Class<?> function2Cls = Class.forName(FUNCTION2_IF);
+            Class<?> contCls     = Class.forName(CONTINUATION_INTERFACE);
 
-            // 1. findById(user_id, id) -> our row as a host Entity (no fragile
-            //    33-field construction; the Entity comes straight from the DB).
-            Method findById = daoCls.getMethod(
-                "findById", String.class, long.class, contCls);
-            Object entity = awaitSuspend(findById, dao, dispatcher, contCls,
-                new Object[]{ userId, rowId });
-            if (entity == null || !entityCls.isInstance(entity)) {
-                Log.w(TAG, "nudge: findById(" + userId + "," + rowId
-                    + ") returned no entity; skipping re-upsert");
-                return;
+            final Method execSQL = sqliteKtCls.getDeclaredMethod(
+                "execSQL", connCls, String.class);
+            execSQL.setAccessible(true);
+            Method performSuspending = dbUtilCls.getDeclaredMethod(
+                "performSuspending", roomDbCls, boolean.class, boolean.class,
+                function2Cls, contCls);
+            performSuspending.setAccessible(true);
+
+            // Values are longs we produced ourselves — no injection surface.
+            final String sql = "UPDATE virtual_key_layout SET updated_at = "
+                + System.currentTimeMillis() + " WHERE id = " + rowId;
+            final Object unit = staticField("kotlin.Unit", "INSTANCE");
+
+            Object block = Proxy.newProxyInstance(
+                function2Cls.getClassLoader(),
+                new Class<?>[]{ function2Cls },
+                (proxy, method, args) -> {
+                    String mn = method.getName();
+                    if ("invoke".equals(mn) && args != null && args.length == 2) {
+                        execSQL.invoke(null, args[0], sql);
+                        return unit;   // completed without suspending
+                    }
+                    if ("equals".equals(mn)) return proxy == args[0];
+                    if ("hashCode".equals(mn)) return System.identityHashCode(proxy);
+                    if ("toString".equals(mn)) return "BhVjoyImporterNudgeBlock";
+                    return null;
+                });
+
+            // Dispatcher only supplies our Continuation Proxy's getContext();
+            // performSuspending picks the connection pool's own context.
+            Object dispatcher = ioDispatcher();
+            CompletableFuture<Object> done = new CompletableFuture<>();
+            Object continuation = makeContinuation(contCls, done, dispatcher);
+            Object immediate = performSuspending.invoke(
+                null, appDb, Boolean.FALSE, Boolean.TRUE, block, continuation);
+            if (isCoroutineSuspended(immediate)) {
+                done.get(SAVE_TIMEOUT_SECONDS, TimeUnit.SECONDS);
             }
-            // 2. upsert(entity) -> UPDATE on virtual_key_layout via Room ->
-            //    invalidation tracker fires -> observeMyLayoutsRevision re-emits.
-            Method upsert = daoCls.getMethod("upsert", entityCls, contCls);
-            awaitSuspend(upsert, dao, dispatcher, contCls, new Object[]{ entity });
-            Log.i(TAG, "nudge: re-upserted row " + rowId
+            Log.i(TAG, "nudge: re-touched row " + rowId
                 + " through Room (invalidation fired)");
         } catch (Throwable t) {
             Log.w(TAG, "nudgeRoomInvalidation failed (live refresh skipped)", t);
@@ -345,23 +550,37 @@ public final class BhVjoyImporter {
     }
 
     /**
-     * Invoke a Kotlin suspend method via reflection (its last parameter is the
-     * Continuation) and await the result. Mirrors saveLayoutLocal: pass a
-     * Continuation Proxy, and if the call returns COROUTINE_SUSPENDED, block
-     * on the CompletableFuture the Proxy completes in resumeWith.
+     * Resolve the host's singleton AppDatabase from Koin. 6.1.1 only keeps
+     * {@code getOrNull$default}; the 6.0.9 {@code get(Class)} is gone.
      */
-    private static Object awaitSuspend(Method m, Object target, Object dispatcher,
-            Class<?> contCls, Object[] leadingArgs) throws Exception {
-        CompletableFuture<Object> done = new CompletableFuture<>();
-        Object continuation = makeContinuation(contCls, done, dispatcher);
-        Object[] args = new Object[leadingArgs.length + 1];
-        System.arraycopy(leadingArgs, 0, args, 0, leadingArgs.length);
-        args[leadingArgs.length] = continuation;
-        Object immediate = m.invoke(target, args);
-        if (isCoroutineSuspended(immediate)) {
-            return done.get(SAVE_TIMEOUT_SECONDS, TimeUnit.SECONDS);
+    private static Object resolveAppDatabase() {
+        try {
+            Class<?> appDbCls = Class.forName(APP_DATABASE_CLS);
+            Class<?> koinCls = Class.forName(KOIN_JAVA_COMPONENT);
+            Class<?> qualifierCls = Class.forName("org.koin.core.qualifier.Qualifier");
+            Class<?> function0Cls = Class.forName("kotlin.jvm.functions.Function0");
+            Method getOrNull = koinCls.getDeclaredMethod(KOIN_GET_OR_NULL,
+                Class.class, qualifierCls, function0Cls, int.class, Object.class);
+            getOrNull.setAccessible(true);
+            return getOrNull.invoke(
+                null, appDbCls, null, null, KOIN_DEFAULTS_MASK, null);
+        } catch (Throwable t) {
+            Log.w(TAG, "resolveAppDatabase failed", t);
+            return null;
         }
-        return immediate;
+    }
+
+    /** kotlinx.coroutines.Dispatchers.getIO(). */
+    private static Object ioDispatcher() throws Exception {
+        Method getIO = Class.forName(DISPATCHER_HOLDER)
+            .getDeclaredMethod(DISPATCHER_IO_METHOD);
+        getIO.setAccessible(true);
+        Object dispatcher = getIO.invoke(null);
+        if (dispatcher == null) {
+            throw new IllegalStateException(
+                DISPATCHER_HOLDER + "." + DISPATCHER_IO_METHOD + "() returned null");
+        }
+        return dispatcher;
     }
 
     /**
@@ -439,14 +658,47 @@ public final class BhVjoyImporter {
         }
     }
 
-    /** Read the layout's display name from VJoyLayout.getName().getLocales().get("default"). */
-    private static String readLayoutName(Object layout) {
+    /**
+     * The layout's display name.
+     *
+     * Primary source is the JSON itself ({@code name.locales.default}) — the
+     * serial names are stable across bases (the 6.1.1 descriptor in
+     * smali_classes2/rvr.smali still spells formatVersion/id/name/... and the
+     * LocalizedString descriptor still spells "locales"), and org.json is
+     * platform code so nothing here can be obfuscated away.
+     *
+     * The reflection fallback covers both shapes: 6.0.9's
+     * {@code getName().getLocales()} and 6.1.1's {@code Ltvr;->c()} returning
+     * an {@code Lr2g;} whose single java.util.Map field is the locales map
+     * (found by type, so no letter is hard-coded).
+     */
+    private static String readLayoutName(String layoutJson, Object layout) {
         try {
-            Method getName = layout.getClass().getMethod("getName");
-            Object localizedString = getName.invoke(layout);
-            if (localizedString == null) return null;
-            Method getLocales = localizedString.getClass().getMethod("getLocales");
-            Object locales = getLocales.invoke(localizedString);
+            org.json.JSONObject root = new org.json.JSONObject(layoutJson);
+            org.json.JSONObject name = root.optJSONObject("name");
+            if (name != null) {
+                org.json.JSONObject locales = name.optJSONObject("locales");
+                if (locales != null) {
+                    String v = locales.optString("default", null);
+                    if (v != null && !v.isEmpty()) return v;
+                    java.util.Iterator<String> it = locales.keys();
+                    while (it.hasNext()) {
+                        String k = it.next();
+                        String any = locales.optString(k, null);
+                        if (any != null && !any.isEmpty()) return any;
+                    }
+                }
+            }
+        } catch (Throwable t) {
+            Log.i(TAG, "readLayoutName: JSON path failed (" + t + "), reflecting");
+        }
+        if (layout == null) return null;
+        try {
+            Object localized = invokeNoArg(layout, "getName");   // 6.0.9
+            if (localized == null) localized = invokeNoArg(layout, "c"); // 6.1.1 Ltvr;->c()
+            if (localized == null) return null;
+            Object locales = invokeNoArg(localized, "getLocales");
+            if (!(locales instanceof java.util.Map)) locales = soleMapField(localized);
             if (!(locales instanceof java.util.Map)) return null;
             Object v = ((java.util.Map<?, ?>) locales).get("default");
             return v == null ? null : v.toString();
@@ -456,15 +708,65 @@ public final class BhVjoyImporter {
         }
     }
 
-    /** Read a String property off the VJoyLayoutSaveReceipt via reflection. */
-    private static String readReceiptString(Object receipt, String getter) {
+    /** Invoke a declared no-arg method, or null if absent/failing. */
+    private static Object invokeNoArg(Object target, String name) {
         try {
-            Method m = receipt.getClass().getMethod(getter);
-            Object v = m.invoke(receipt);
-            return v == null ? null : v.toString();
+            Method m = target.getClass().getDeclaredMethod(name);
+            if (m.getParameterTypes().length != 0) return null;
+            m.setAccessible(true);
+            return m.invoke(target);
         } catch (Throwable t) {
             return null;
         }
+    }
+
+    /** Value of the object's only java.util.Map instance field, else null. */
+    private static Object soleMapField(Object target) {
+        try {
+            Field found = null;
+            for (Field f : target.getClass().getDeclaredFields()) {
+                if (java.lang.reflect.Modifier.isStatic(f.getModifiers())) continue;
+                if (!java.util.Map.class.isAssignableFrom(f.getType())) continue;
+                if (found != null) return null;   // ambiguous — refuse to guess
+                found = f;
+            }
+            if (found == null) return null;
+            found.setAccessible(true);
+            return found.get(target);
+        } catch (Throwable t) {
+            return null;
+        }
+    }
+
+    /**
+     * The save receipt's configHash (FNV-1a of layout.json, written to
+     * index_hash so the host's rebuild sees the layout as unchanged).
+     *
+     * 6.0.9's VJoyLayoutSaveReceipt had getConfigHash(); 6.1.1's {@code Lk0s;}
+     * has no getters at all (only equals/hashCode/toString), so read the
+     * backing field. Field order == ctor order — verified in
+     * smali_classes2/k0s.smali's `<init>(String x9, Z, J, String, J)` body
+     * (`iput-object p13 -> l`), and the 13-arg order itself is unchanged from
+     * 6.0.9 (layoutId, folderAbs, folderRel, configAbs, configRel, assetsAbs,
+     * assetsRel, previewAbs, previewRel, hasPreview, configSizeBytes,
+     * configHash, savedAt), so configHash is the 12th arg = field `l`.
+     *
+     * Nullable column: if this can't be read we just omit index_hash.
+     */
+    private static String readConfigHash(Object receipt) {
+        if (receipt == null) return null;
+        Object v = invokeNoArg(receipt, "getConfigHash");     // 6.0.9
+        if (v == null) {                                     // 6.1.1 Lk0s;->l
+            try {
+                Field f = receipt.getClass().getDeclaredField("l");
+                if (f.getType() == String.class) {
+                    f.setAccessible(true);
+                    v = f.get(receipt);
+                }
+            } catch (Throwable ignored) { }
+        }
+        if (v == null) Log.i(TAG, "configHash unavailable; index_hash omitted");
+        return v == null ? null : v.toString();
     }
 
     /** Minimal JSON string-encoder for the name field. */
@@ -586,11 +888,31 @@ public final class BhVjoyImporter {
         }
     }
 
-    /** Pull the `id` getter off a VJoyLayout instance via reflection. */
-    private static String readLayoutId(Object vJoyLayout) {
+    /**
+     * The layout's `id`. Read from the JSON first (platform org.json, nothing
+     * to obfuscate); reflection fallback handles 6.0.9's {@code getId()} and
+     * 6.1.1's {@code Ltvr;->b()} / field {@code b} (proven to be `id` by the
+     * serializer descriptor element order in smali_classes2/rvr.smali and the
+     * ctor field order in smali_classes2/tvr.smali).
+     */
+    private static String readLayoutId(String layoutJson, Object vJoyLayout) {
         try {
-            Method m = vJoyLayout.getClass().getMethod("getId");
-            Object id = m.invoke(vJoyLayout);
+            String id = new org.json.JSONObject(layoutJson).optString("id", null);
+            if (id != null && !id.isEmpty()) return id;
+        } catch (Throwable t) {
+            Log.i(TAG, "readLayoutId: JSON path failed (" + t + "), reflecting");
+        }
+        if (vJoyLayout == null) return null;
+        try {
+            Object id = invokeNoArg(vJoyLayout, "getId");    // 6.0.9
+            if (id == null) id = invokeNoArg(vJoyLayout, "b"); // 6.1.1 Ltvr;->b()
+            if (id == null) {
+                Field f = vJoyLayout.getClass().getDeclaredField("b");
+                if (f.getType() == String.class) {
+                    f.setAccessible(true);
+                    id = f.get(vJoyLayout);
+                }
+            }
             return id == null ? null : id.toString();
         } catch (Throwable t) {
             Log.w(TAG, "readLayoutId failed", t);
@@ -599,50 +921,55 @@ public final class BhVjoyImporter {
     }
 
     /**
-     * Invoke the host's coroutine-builder withContext (kotlinx-coroutines
-     * `BuildersKt.withContext(CoroutineContext, Function2, Continuation)`)
-     * with the save coroutine block ({@code Lagl;}, 6.0.4 {@code Lm0n;})
-     * directly. Bypasses the {@code Lbgl;->i} static wrapper (6.0.4
-     * {@code Lo0n;->i}) because its declared third-arg type is the abstract
-     * {@code Lkq3;} class (6.0.4 {@code Lci3;}) — Java reflection can't accept
-     * our {@code Ljq3;} Proxy as that type even though it would work at JVM
-     * bytecode level. {@code Laig;->V} (6.0.4 {@code Lw0o;->s0}) accepts the
-     * {@code Ljq3;} interface directly, which our Proxy satisfies.
+     * Run the host's save coroutine via
+     * {@code kotlinx.coroutines.BuildersKt.withContext(CoroutineContext,
+     * Function2, Continuation)}.
      *
-     * Call shape (from bgl.i smali):
-     *   sget-object v0, Ln80;->a:Li84;     ; Dispatchers.IO
-     *   new-instance v1, Lagl;
-     *   const/4 v2, 0x0
-     *   invoke-direct {v1, layoutId, layout, null}, Lagl;-><init>(String, VJoyLayout, Ljq3;)V
-     *   invoke-static {v0, v1, ourContinuation}, Laig;->V(Lst3;Luv6;Ljq3;)Ljava/lang/Object;
+     * We reproduce the host facade {@code Lc0s;->i} rather than calling it,
+     * because its declared third-arg type is the ABSTRACT
+     * {@code kotlin.coroutines.jvm.internal.ContinuationImpl} — Java
+     * reflection will not accept our Continuation Proxy as that type even
+     * though it is fine at JVM bytecode level. {@code BuildersKt.withContext}
+     * declares the {@code kotlin.coroutines.Continuation} INTERFACE, which our
+     * Proxy satisfies.
+     *
+     * Call shape, verbatim from smali_classes3/c0s.smali `i()`:
+     *   sget-object v0, Lkj0;->a          ; = Dispatchers.getIO()
+     *   new-instance v1, Lf8n;
+     *   const/4 v2, 0x0                  ; completion = null
+     *   const/16 v3, 0x14                ; merged-case discriminator
+     *   invoke-direct {v1, layoutId, layout, v2, v3},
+     *       Lf8n;-><init>(Ljava/lang/Object;Ljava/lang/Object;Lkotlin/coroutines/Continuation;I)V
+     *   invoke-static {v0, v1, cont}, BuildersKt->withContext(...)
+     *
+     * Note the ctor takes the layout as a bare Object, so the (obfuscated)
+     * layout class is NOT needed here — only for decoding.
      */
     private static Object saveLayoutLocal(String layoutId, Object vJoyLayout)
             throws Exception {
-        Class<?> vJoyLayoutCls = Class.forName(VJOY_LAYOUT_FQN);
-        Class<?> continuationCls = Class.forName(CONTINUATION_INTERFACE);     // jq3 (6.0.4 bi3)
-        Class<?> coroutineCtxCls = Class.forName(COROUTINE_CONTEXT_IF);       // st3 (6.0.4 dm3)
-        Class<?> function2Cls = Class.forName(FUNCTION2_IF);                  // uv6 (6.0.4 dx6)
-        Class<?> withContextCls = Class.forName(WITH_CONTEXT_CLASS);          // aig (6.0.4 w0o)
-        Class<?> dispatchersCls = Class.forName(DISPATCHER_HOLDER);           // n80 (6.0.4 f80)
-        Class<?> saveBlockCls = Class.forName(SAVE_BLOCK_CLASS);              // agl (6.0.4 m0n)
+        Class<?> continuationCls = Class.forName(CONTINUATION_INTERFACE);
+        Class<?> coroutineCtxCls = Class.forName(COROUTINE_CONTEXT_IF);
+        Class<?> function2Cls = Class.forName(FUNCTION2_IF);
+        Class<?> withContextCls = Class.forName(WITH_CONTEXT_CLASS);
+        Class<?> saveBlockCls = Class.forName(SAVE_BLOCK_CLASS);              // f8n (6.0.9 qpm)
 
-        // 1. Pull Dispatchers.IO singleton from n80.a.
-        Field dispatcherField = dispatchersCls.getDeclaredField("a");
-        dispatcherField.setAccessible(true);
-        Object dispatcher = dispatcherField.get(null);
-        if (dispatcher == null) throw new IllegalStateException("n80.a is null");
+        // 1. Dispatchers.getIO() — the save is file IO. Must be the METHOD:
+        //    on 6.1.1 the static field Dispatchers.a is Default.
+        Object dispatcher = ioDispatcher();
 
-        // 2. Construct the save coroutine block. ctor: (String, VJoyLayout, Ljq3;)
+        // 2. new Lf8n;(layoutId, layout, null, 0x14) — field b = layoutId,
+        //    field c = layout, matching invokeSuspend's :pswitch_8 block.
         Constructor<?> blockCtor = saveBlockCls.getDeclaredConstructor(
-            String.class, vJoyLayoutCls, continuationCls);
+            Object.class, Object.class, continuationCls, int.class);
         blockCtor.setAccessible(true);
-        Object saveBlock = blockCtor.newInstance(layoutId, vJoyLayout, null);
+        Object saveBlock = blockCtor.newInstance(
+            layoutId, vJoyLayout, null, SAVE_BLOCK_CASE);
 
         // 3. Build a Continuation proxy and bridge to a CompletableFuture.
         CompletableFuture<Object> done = new CompletableFuture<>();
         Object continuation = makeContinuation(continuationCls, done, dispatcher);
 
-        // 4. Find aig.V(Lst3;Luv6;Ljq3;)Object — withContext (6.0.4 w0o.s0).
+        // 4. BuildersKt.withContext(CoroutineContext, Function2, Continuation).
         Method withContext = withContextCls.getDeclaredMethod(
             WITH_CONTEXT_METHOD, coroutineCtxCls, function2Cls, continuationCls);
         withContext.setAccessible(true);
@@ -659,8 +986,8 @@ public final class BhVjoyImporter {
     }
 
     /**
-     * Build a Proxy that implements the host's Continuation interface
-     * (R8-renamed kotlin.coroutines.Continuation). Two methods:
+     * Build a Proxy that implements kotlin.coroutines.Continuation (a real,
+     * unobfuscated name on 6.1.1). Two methods:
      *   - getContext() -> CoroutineContext
      *   - resumeWith(Object) -> Unit
      *
@@ -707,8 +1034,10 @@ public final class BhVjoyImporter {
     /**
      * Detect Kotlin's COROUTINE_SUSPENDED sentinel. Kotlin defines this
      * as {@code kotlin.coroutines.intrinsics.IntrinsicsKt.getCOROUTINE_SUSPENDED}
-     * — a singleton object. Rather than chase its R8-renamed FQN, we
-     * sniff by the well-known toString form: "COROUTINE_SUSPENDED".
+     * — a singleton enum constant of CoroutineSingletons. We sniff it by
+     * simple name / toString ("COROUTINE_SUSPENDED") rather than calling the
+     * intrinsic, so this stays correct whether or not the base obfuscates
+     * kotlin.* (6.1.1 does not).
      *
      * This is brittle but cheap. If the sentinel detection fails the
      * symptom is just a save timeout (we'll log and toast).
