@@ -15,11 +15,23 @@ R8 re-lettering and dex-count change (5 -> 4, so classes moved buckets again):
   * the network layer was rebuilt around repository suspend methods instead of
     per-endpoint SuspendLambdas, so the stubs return the repo's own Either
     success wrapper (Ldd7;) rather than a bare kotlin.Unit.
-  * the XiaoJi heartbeat surface SHRANK: heartbeat/game/update and
-    heartbeat/game/end no longer exist in the APK at all. Two stubs cover what
-    took three on 6.0.9.
-  * the /events/device-performance-config channel is GONE (6.0.9 had renamed it
-    device-performance-session-summary); that stub is retired, not re-anchored.
+  * the XiaoJi heartbeat surface only LOOKS smaller: heartbeat/game/update and
+    heartbeat/game/end are absent from the BASE APK, so two base stubs replace
+    6.0.9's three. !!! THEY ARE NOT GONE — they moved into the PC-engine plugin
+    and STILL FIRE (update every 30 s during play, log-confirmed), carrying the
+    user's Steam ID64 as source_user_id. See the heartbeat note below.
+  * the /events/device-performance-config channel left the BASE APK, so its
+    6.0.9 stub is retired here — but it too moved into the plugin (endpoint
+    literal .../events/device-performance-session-summary in Lxjp/n2;) and is
+    killed there by apply_plugin_privacy_patches.py, not by this script.
+  * NEW and NOT covered by this script: 6.1.1 added a Firebase Analytics
+    logEvent mirror (base Lcr1;->b/c, plugin Lxjp/kz;) carrying device_id and
+    gh_uid. 6.0.9 had zero app-code logEvent call sites. It should be inert
+    because of the manifest kill-switch below, but the app calls
+    setAnalyticsCollectionEnabled(true) plus consent grants on every startup
+    (Ly6k;->a, log-confirmed "applyToSdk enabled=true"), so the manifest flag is
+    now load-bearing for a live event stream rather than vestigial. Needs a
+    pcap/DNS check against app-measurement.com to confirm the flag wins.
   * kotlin.Unit is no longer obfuscated, so `Lkotlin/Unit;->INSTANCE` resolves
     (6.0.7-6.0.9 needed the R8 letter Lx6m;->a).
   * the app class kept its name but its methods shifted again
@@ -62,7 +74,10 @@ What this kills
     Ldd7;(Unit) success wrapper its own early-out path builds) and Lby9;->e
     stubs the heartbeat/game/getUserPlayTimeList GET (returning an empty
     wrapped list). heartbeat/game/update and heartbeat/game/end are absent
-    from 6.1.1 entirely, so two stubs replace 6.0.9's three. UX trade-off:
+    from the BASE APK, so two base stubs replace 6.0.9's three — but they are
+    NOT gone: they live in the PC-engine plugin and still fire every 30 s
+    during play, carrying the user's Steam ID64. Killing those needs
+    shadow-dex stubs; see apply_plugin_privacy_patches.py. UX trade-off:
     the in-app playtime UI renders empty. Steam's own playtime on your Steam
     profile is unaffected (Steam tracks playtime independently via the
     Steam client running inside Wine).
@@ -497,10 +512,20 @@ PLAYTIME_EMPTY_PREPEND = (
 def patch_heartbeat(root: Path) -> None:
     """Stub the heartbeat POST + getUserPlayTimeList.
 
-    6.1.1 SHRANK this surface. The heartbeat/game/{update,end} endpoints are
-    gone from the APK entirely — those string literals do not appear anywhere —
-    so where 6.0.9 needed three stubs (start+update fused in Lzco;, end in
-    Lvco;, playtime in Ljk7;->c) 6.1.1 needs two:
+    !!! THIS COVERS THE BASE APK ONLY — THE TRACKER IS NOT FULLY KILLED.
+    heartbeat/game/{update,end} literals are absent from the base APK, but they
+    live in the PC-engine PLUGIN and still fire. Verified on-device with a game
+    running: the :pcengine process POSTs
+    landscape-api-oversea.vgabc.com/heartbeat/game/update every 30 s with
+    game_id, source_game_id, source_type and source_user_id = the user's
+    Steam ID64. The owning plugin repository is Lxjp/kx9; (WineGameUsageTracker,
+    key prefix "wine_usage:"); the URL-literal holders Lxjp/x06; (update),
+    Lxjp/gx9; (end) and Lxjp/uk8;/Lxjp/w7; (start) are merged synthetics, so
+    anchor on the kx9 consumer rather than the literals — the same reasoning
+    that makes us stub Lvho;->a instead of Ld80;->invoke here.
+    Killing it needs shadow-dex stubs (see apply_plugin_privacy_patches.py).
+
+    What the two stubs below DO cover, in the base APK:
 
       Lvho;->a(String, Continuation)   the surviving heartbeat/game/start POST
       Lby9;->e(Continuation)           heartbeat/game/getUserPlayTimeList
