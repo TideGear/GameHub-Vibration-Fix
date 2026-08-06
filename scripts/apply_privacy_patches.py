@@ -18,8 +18,10 @@ R8 re-lettering and dex-count change (5 -> 4, so classes moved buckets again):
   * the XiaoJi heartbeat surface only LOOKS smaller: heartbeat/game/update and
     heartbeat/game/end are absent from the BASE APK, so two base stubs replace
     6.0.9's three. !!! THEY ARE NOT GONE — they moved into the PC-engine plugin
-    and STILL FIRE (update every 30 s during play, log-confirmed), carrying the
-    user's Steam ID64 as source_user_id. See the heartbeat note below.
+    and FIRED there (update every 30 s during play, log-confirmed), carrying the
+    user's Steam ID64 as source_user_id. That plugin-side trio is killed by
+    apply_plugin_privacy_patches.py (one stub at the shared bridge
+    Lxjp/jg4;->e), not by this script. See the heartbeat note below.
   * the /events/device-performance-config channel left the BASE APK, so its
     6.0.9 stub is retired here — but it too moved into the plugin (endpoint
     literal .../events/device-performance-session-summary in Lxjp/n2;) and is
@@ -69,15 +71,28 @@ What this kills
     so Mob's ContentProvider auto-init can't fire even before the bytecode
     paths would.
 
+  Chinese-OEM push fleet (manifest android:enabled=false + meta-data strip)
+    6.1.1 newly registers the vendor SDKs behind Mob's push plugins —
+    Xiaomi MiPush, Huawei HMS Push, Meizu, vivo — OUTSIDE the com.mob. /
+    cn.fly. namespaces, so the 6.0.9 predicate left them all enabled.
+    Several were exported, and com.xiaomi.mipush.sdk.
+    NotificationClickedActivity was exported with NO permission (any
+    installed app could launch it). All 13 are now disabled, and the
+    OEM credential <meta-data> (Huawei appid, vivo api_key/app_id,
+    HiHonor app_id, MIPUSH_SDK_VERSION_*) is stripped. See
+    OEM_PUSH_COMPONENT_PREFIXES for the exact prefixes and for what is
+    deliberately left enabled (generic HMS Core UI, AGConnect, FCM).
+
   XiaoJi heartbeat / playtime tracker (bytecode stubs)
     Lvho;->a stubs the surviving heartbeat/game/start POST (returning the
     Ldd7;(Unit) success wrapper its own early-out path builds) and Lby9;->e
     stubs the heartbeat/game/getUserPlayTimeList GET (returning an empty
     wrapped list). heartbeat/game/update and heartbeat/game/end are absent
     from the BASE APK, so two base stubs replace 6.0.9's three — but they are
-    NOT gone: they live in the PC-engine plugin and still fire every 30 s
-    during play, carrying the user's Steam ID64. Killing those needs
-    shadow-dex stubs; see apply_plugin_privacy_patches.py. UX trade-off:
+    NOT gone: they live in the PC-engine plugin, where they fired every 30 s
+    during play carrying the user's Steam ID64. That trio is killed plugin-side
+    by apply_plugin_privacy_patches.py (shadow-dex stub at the shared bridge
+    Lxjp/jg4;->e, the sole funnel for start/update/end). UX trade-off:
     the in-app playtime UI renders empty. Steam's own playtime on your Steam
     profile is unaffected (Steam tracks playtime independently via the
     Steam client running inside Wine).
@@ -289,6 +304,75 @@ def _has_mob_namespace(name: str) -> bool:
     return name.startswith("com.mob.") or name.startswith("cn.fly.")
 
 
+# 6.1.1 newly registers the Chinese-OEM push fleet that Mob Push pulls in as
+# transport plugins. Those components sit OUTSIDE com.mob./cn.fly., so the
+# predicate above left them enabled — several exported, and
+# com.xiaomi.mipush.sdk.NotificationClickedActivity exported with NO permission,
+# i.e. any installed app could launch it. Mob's own plugin shims
+# (com.mob.pushsdk.plugins.{xiaomi,huawei,meizu,vivo,oppo,honor,fcm}) were
+# already disabled; these are the vendor SDKs behind them.
+#
+# These are PUSH-SPECIFIC PACKAGE prefixes, not whole vendor namespaces. The
+# distinction matters most for Huawei: com.huawei.hms.* is HMS Core, shared by
+# every HMS kit, so only com.huawei.hms.support.api.push.* is listed here.
+# Deliberately left ENABLED, with reasons:
+#   com.huawei.hms.activity.BridgeActivity / EnableServiceActivity — generic HMS
+#     Core resolution UI, both android:exported="false", so zero external
+#     surface. They are only ever started from HMS code, which on this build
+#     exists solely to serve the (now dead) Mob Huawei push channel — the base
+#     APK contains no other HMS kit (no ads/maps/location/IAP/scan; the only
+#     non-com.huawei.* callers of HmsInstanceId are R8-relettered HMS SDK
+#     internals: Lkw;, Lkeu;, Lveu;, Lwau;). Disabling them would buy no
+#     privacy and could break HMS availability UI if a future base APK adopts
+#     another HMS kit.
+#   com.huawei.agconnect.core.ServiceDiscovery — AGConnect core bootstrap,
+#     exported="false", not a push component.
+#   com.google.firebase.messaging.* / FirebaseInstanceIdReceiver — untouched, as
+#     upstream. Firebase is handled by the manifest kill switch above and the
+#     auto-init stub below; nothing here has shown FCM to be push-only+unused.
+OEM_PUSH_COMPONENT_PREFIXES = (
+    "com.xiaomi.push.",                  # XMPushService, XMJobService,
+                                         # service.receivers.PingReceiver
+    "com.xiaomi.mipush.",                # PushMessageHandler (exported),
+                                         # MessageHandleService,
+                                         # NotificationClickedActivity (exported,
+                                         # no permission)
+    "com.huawei.hms.support.api.push.",  # PushReceiver + PushMsgReceiver (both
+                                         # exported, directBootAware),
+                                         # service.HmsMsgService (exported,
+                                         # directBootAware), PushProvider
+                                         # (exported), TransActivity
+    "com.meizu.cloud.pushsdk.",          # MzPushSystemReceiver
+    "com.vivo.push.",                    # sdk.service.CommandClientService
+                                         # (exported)
+    "com.hihonor.push.",                 # no components in 6.1.1 (meta-data
+    "com.heytap.msp.push.",              # only); listed so a future base that
+    "com.heytap.mcs.",                   # registers them is covered without
+    "com.coloros.mcs.",                  # another re-anchoring pass
+)
+
+# Extra <meta-data> names carrying live OEM push credentials/config that do not
+# match a prefix above. Exact names only — a com.huawei.hms.client. PREFIX would
+# also swallow com.huawei.hms.client.service.name:{base,opendevice,push}, which
+# are HMS kit descriptors rather than credentials.
+# (com.mob.push.{xiaomi,oppo,meizu}.* are already removed by _has_mob_namespace.)
+OEM_PUSH_METADATA_NAMES = (
+    "com.huawei.hms.client.appid",   # 117218631
+    "MIPUSH_SDK_VERSION_CODE",
+    "MIPUSH_SDK_VERSION_NAME",
+)
+
+
+def _is_oem_push_component(name: str) -> bool:
+    return name.startswith(OEM_PUSH_COMPONENT_PREFIXES)
+
+
+def _is_oem_push_metadata(name: str) -> bool:
+    # com.vivo.push.{api_key,app_id,support_monitor} and
+    # com.hihonor.push.{app_id,sdk_version} come in via the component prefixes.
+    return _is_oem_push_component(name) or name in OEM_PUSH_METADATA_NAMES
+
+
 def patch_manifest(manifest_path: Path) -> None:
     src = read(manifest_path)
 
@@ -358,28 +442,39 @@ def patch_manifest(manifest_path: Path) -> None:
         else:
             print(f"WARN: GMS measurement component not found: {fqcn}", file=sys.stderr)
 
-    # 4. Mob neutralisation in the manifest. Two passes:
+    # 4. Push neutralisation in the manifest. Two passes:
     #    (a) flip android:enabled="false" on every provider/service/
-    #        receiver/activity whose android:name starts with com.mob. or
-    #        cn.fly.; (b) remove <meta-data> entries in the same namespaces
-    #        outright (meta-data has no enabled attribute).
+    #        receiver/activity whose android:name is in the com.mob. / cn.fly.
+    #        namespaces OR in one of the OEM push packages above;
+    #        (b) remove <meta-data> entries in the same namespaces outright
+    #        (meta-data has no enabled attribute), plus the OEM credential
+    #        entries listed in OEM_PUSH_METADATA_NAMES.
     #
     # The match is line-by-line because apktool emits each tag on its own
     # line. Re-emit with the same indentation the line came in with.
     out_lines = []
     skipped_meta = 0
+    skipped_oem_meta = 0
     flipped = 0
+    flipped_oem = 0
     for line in src.split("\n"):
         stripped = line.lstrip()
         if stripped.startswith("<meta-data"):
-            attrs = _split_attrs(stripped)
-            if _has_mob_namespace(attrs.get("android:name", "")):
+            name = _split_attrs(stripped).get("android:name", "")
+            if _has_mob_namespace(name):
                 skipped_meta += 1
+                continue
+            if _is_oem_push_metadata(name):
+                skipped_oem_meta += 1
+                print(f"OK: removed OEM push <meta-data> {name}")
                 continue
         for tag in ("provider", "service", "receiver", "activity"):
             if stripped.startswith(f"<{tag} ") or stripped.startswith(f"<{tag}\n"):
                 attrs = _split_attrs(stripped)
-                if _has_mob_namespace(attrs.get("android:name", "")):
+                name = attrs.get("android:name", "")
+                is_mob = _has_mob_namespace(name)
+                is_oem = (not is_mob) and _is_oem_push_component(name)
+                if is_mob or is_oem:
                     if attrs.get("android:enabled") == "false":
                         break  # already disabled
                     if 'android:enabled="' in line:
@@ -400,7 +495,11 @@ def patch_manifest(manifest_path: Path) -> None:
                             line,
                             count=1,
                         )
-                    flipped += 1
+                    if is_oem:
+                        flipped_oem += 1
+                        print(f"OK: disabled OEM push {tag} {name}")
+                    else:
+                        flipped += 1
                 break
         out_lines.append(line)
     src = "\n".join(out_lines)
@@ -408,6 +507,13 @@ def patch_manifest(manifest_path: Path) -> None:
         print(f"OK: disabled {flipped} Mob/cn.fly manifest components")
     if skipped_meta:
         print(f"OK: removed {skipped_meta} Mob/cn.fly <meta-data> entries")
+    if flipped_oem:
+        print(f"OK: disabled {flipped_oem} OEM push manifest components")
+    if skipped_oem_meta:
+        print(f"OK: removed {skipped_oem_meta} OEM push <meta-data> entries")
+    if not flipped_oem and not skipped_oem_meta:
+        print("OK: OEM push components/meta-data already neutralised "
+              "(or absent from this base)")
 
     write(manifest_path, src)
 
@@ -512,18 +618,20 @@ PLAYTIME_EMPTY_PREPEND = (
 def patch_heartbeat(root: Path) -> None:
     """Stub the heartbeat POST + getUserPlayTimeList.
 
-    !!! THIS COVERS THE BASE APK ONLY — THE TRACKER IS NOT FULLY KILLED.
-    heartbeat/game/{update,end} literals are absent from the base APK, but they
-    live in the PC-engine PLUGIN and still fire. Verified on-device with a game
-    running: the :pcengine process POSTs
-    landscape-api-oversea.vgabc.com/heartbeat/game/update every 30 s with
+    !!! THIS COVERS THE BASE APK ONLY. heartbeat/game/{update,end} literals are
+    absent from the base APK because they live in the PC-engine PLUGIN, and they
+    DID fire: verified on-device with a game running, the :pcengine process
+    POSTed landscape-api-oversea.vgabc.com/heartbeat/game/update every 30 s with
     game_id, source_game_id, source_type and source_user_id = the user's
-    Steam ID64. The owning plugin repository is Lxjp/kx9; (WineGameUsageTracker,
-    key prefix "wine_usage:"); the URL-literal holders Lxjp/x06; (update),
-    Lxjp/gx9; (end) and Lxjp/uk8;/Lxjp/w7; (start) are merged synthetics, so
-    anchor on the kx9 consumer rather than the literals — the same reasoning
-    that makes us stub Lvho;->a instead of Ld80;->invoke here.
-    Killing it needs shadow-dex stubs (see apply_plugin_privacy_patches.py).
+    Steam ID64. The owning plugin class is Lxjp/kx9; (WineGameUsageTracker,
+    local MMKV key prefix "wine_usage:"), but its own methods only build the
+    request DTO and resolve ids — the three POSTs are emitted from its suspend
+    lambdas Lxjp/uk8; (start), Lxjp/x06; (update) and Lxjp/gx9; (end), all of
+    which funnel through the static bridge Lxjp/jg4;->e(…Lxjp/fs9;…). That
+    bridge is what apply_plugin_privacy_patches.py stubs, via the shadow dex.
+    The URL-literal holders Lxjp/x06;/Lxjp/uk8;/Lxjp/w7; are merged synthetics
+    serving unrelated purposes app-wide, so they are NOT stubbed — the same
+    reasoning that makes us stub Lvho;->a instead of Ld80;->invoke here.
 
     What the two stubs below DO cover, in the base APK:
 
@@ -585,10 +693,9 @@ def patch_analytics_events(root: Path) -> None:
     Lxjp/gv1; the repository (device_perf_session_summary_v1), Lxjp/hv1; and
     Lxjp/iv1; the upload log lambdas.
 
-    Killing it needs a plugin-side stub delivered through the shadow dex — add
-    the uploader to SHADOW_CLASSES in build_plugin_shadow_dex.py and stub it in
-    apply_plugin_rumble_patches.py (which already patches plugin classes without
-    touching base.apk). Not done yet; see the README privacy section."""
+    It is killed plugin-side by apply_plugin_privacy_patches.py, which stubs the
+    uploader Lxjp/mv1;->c and ships it through the shadow dex (see
+    SHADOW_CLASSES in build_plugin_shadow_dex.py) — not by this script."""
     prepend_to_method(
         root / "smali_classes3/l88.smali",
         ".method public final a(Ljava/util/Collection;"

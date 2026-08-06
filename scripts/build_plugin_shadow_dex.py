@@ -41,6 +41,11 @@ SHADOW_CLASSES = [
     "smali/xjp/fi3.smali",
     # device-performance telemetry kill (apply_plugin_privacy_patches.py)
     "smali/xjp/mv1.smali",
+    # WineGameUsageTracker playtime-heartbeat kill — the static bridge
+    # Lxjp/jg4;->e() that all three of heartbeat/game/{start,update,end} funnel
+    # through (apply_plugin_privacy_patches.py). The rest of Lxjp/jg4; (the
+    # generic GET/POST helpers ~30 other plugin classes use) is copied verbatim.
+    "smali/xjp/jg4.smali",
 ]
 
 # Marker proving the sources were patched; refuse to ship an unpatched shadow

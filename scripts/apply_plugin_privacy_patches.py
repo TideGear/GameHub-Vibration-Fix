@@ -1,9 +1,13 @@
 #!/usr/bin/env python3
 """
-Kill the PC-engine plugin's device-performance telemetry (GameHub 6.1.1).
+Kill the PC-engine plugin's telemetry channels (GameHub 6.1.1).
 
-WHY THIS EXISTS
----------------
+Two channels live in the downloaded PC-engine plugin rather than the base APK,
+so apply_privacy_patches.py cannot reach them. Both are stubbed here and shipped
+through the shadow dex.
+
+=== CHANNEL 1: device-performance session summary ==========================
+
 6.0.9 had a device-performance channel that apply_privacy_patches.py stubbed at
 Lqv4;->b. On 6.1.1 that endpoint is absent from the BASE APK, which made it look
 retired — it was not. It moved into the downloaded PC-engine plugin and got a
@@ -21,8 +25,7 @@ and log `summaryOnly=true legacyUpload=false`, i.e. the OLD endpoint is disabled
 and this replaced it. So a per-session hardware/performance profile tied to a
 user id and game id leaves the device on every play session.
 
-WHAT THIS PATCHES
------------------
+Patched:
   Lxjp/mv1;->c(JLkotlin/coroutines/jvm/internal/ContinuationImpl;)Ljava/lang/Object;
 
 That is the uploader: it is the unique method in Lxjp/mv1; that builds the
@@ -41,18 +44,119 @@ Related plugin classes, for future re-anchoring:
   Lxjp/hv1;  "upload start" log lambda      Lxjp/iv1;  "upload success" lambda
   Lxjp/jv1;  uploader result (fields a:Z, b:Set; synthetic no-arg ctor)
 
-Delivered through the SAME shadow-dex mechanism as the rumble hooks, so the
-plugin's base.apk is never modified and its SHA-256 identity record stays valid.
-Run this alongside apply_plugin_rumble_patches.py, before
+=== CHANNEL 2: playtime heartbeat (leaks the user's Steam ID64) ============
+
+Confirmed live on stock 6.1.1: with a game running, the :pcengine process POSTs
+https://landscape-api-oversea.vgabc.com/heartbeat/game/update every 30 seconds
+with params
+
+  game_id=…&source_game_id=…&source_type=1&source_user_id=76561197968189945
+
+where source_user_id is the user's real Steam ID64. heartbeat/game/start and
+heartbeat/game/end fire around it. The base-APK stub (Lvho;->a) only covers a
+base-APK heartbeat *start*; the plugin carries its own start/update/end trio.
+
+Owner: Lxjp/kx9; = WineGameUsageTracker (getValue() returns that literal;
+local MMKV key prefix "wine_usage:" built in d()). Its methods are NOT the
+senders — that mattered, because the audit's start/update/end mapping was
+unconfirmed. Read out of the smali:
+
+  Lxjp/kx9;->a(Lxjp/kx9;,Cont)  builds the request DTO `new Lxjp/fs9;(Integer,
+      String, String, String)` = (game_id, source_game_id, source_type,
+      source_user_id). Not a sender.
+  Lxjp/kx9;->b(Cont)  memoises field Z from Lxjp/ap2;->e — the source_user_id
+      used when source_type == "2".
+  Lxjp/kx9;->c(Cont)  memoises field X from Lxjp/ty6;->a:J — the source_user_id
+      used when source_type == "1", i.e. THE Steam ID64 seen on the wire.
+  Lxjp/kx9;->d()     sha256("wine_usage:"+a+":"+b) — the local MMKV key.
+  Lxjp/kx9;->e(String,Cont)  packed-switch on source_type: "1"->c(), "2"->b(),
+      "3"->"". So e() is the id RESOLVER, not a network call.
+  Lxjp/kx9;->f()     session stop: cancels the heartbeat Job (field A), then
+      accumulates elapsed seconds into MMKV.
+
+The three POSTs live in the tracker's suspend lambdas, each of which builds the
+DTO via kx9->a() and then hands it to ONE shared HTTP bridge:
+
+  Lxjp/uk8;->invokeSuspend  const-string "heartbeat/game/start"   -> jg4->e(...)
+  Lxjp/x06;->invokeSuspend  const-string "heartbeat/game/update"  -> jg4->e(...)
+  Lxjp/gx9;->invokeSuspend  const-string "heartbeat/game/end"     -> jg4->e(...)
+
+(Lifecycle, read from Lxjp/wv9;: on session start it launches Lxjp/x06;(kx9,
+null,0x18) when kx9->q is set else Lxjp/uk8;(kx9,null), then launches
+Lxjp/gx9;(kx9,null,1) into kx9->A — that is the `while (isActive) { delay(0x7530
+= 30_000 ms); launch x06(update); accumulate MMKV }` loop, which matches the
+observed 30 s cadence. Lxjp/gx9; with selector 0 is the end POST, reached from
+kx9->f() via Lxjp/l86;.)
+
+WHAT THIS PATCHES
+
+  Lxjp/jg4;->e(Lxjp/jg4;Ljava/lang/String;Lxjp/fs9;
+               Lkotlin/coroutines/jvm/internal/SuspendLambda;)Ljava/lang/Object;
+
+That is the single funnel for all three beats: an R8-synthesised static bridge
+that supplies the default request-config block (Lxjp/k3;(0xb)) and delegates to
+the generic POST helper Lxjp/jg4;->d(...). Two independent facts make it the
+right anchor rather than the URL-literal holders:
+
+  * its third parameter is typed Lxjp/fs9; — the heartbeat DTO, which exists for
+    nothing else in the plugin (Lxjp/ds9;/Lxjp/es9; are just its serialiser and
+    Companion);
+  * tree-wide it has exactly THREE call sites, one per heartbeat path, and every
+    caller file carries exactly one heartbeat/game/* literal. assert_heartbeat_
+    funnel() re-checks that at patch time, so a future plugin that routes some
+    other endpoint through e() fails the build instead of silently losing it.
+
+Lxjp/jg4;'s other methods (a/b/c/d/f — vcontroller/deleteMap,
+vcontroller/uploadGtheme and the generic GET/POST helpers used by ~30 other
+plugin classes) are copied into the shadow dex verbatim and keep working. This
+mirrors why the base APK stubs the CONSUMER Lvho;->a rather than the URL
+provider Ld80;->invoke: the literal holders Lxjp/x06;, Lxjp/gx9;, Lxjp/uk8; and
+Lxjp/w7; are merged synthetics serving unrelated purposes app-wide (Lxjp/w7;
+:pswitch_d returns "heartbeat/game/start" from a Function0 that also throws the
+LocalAppAdaptiveInfo error and yields Compose/serializer values), so stubbing
+them would corrupt unrelated resolution.
+
+RETURN SHAPE. e() has no bail-out path of its own to copy, so the value was read
+out of the three callers instead — all three provably tolerate null:
+
+  start  (Lxjp/uk8;)  move-result-object v0; compared only against
+                      COROUTINE_SUSPENDED, then overwritten with the kx9 ref.
+                      The value is never read.
+  update (Lxjp/x06;)  `check-cast p1, Lxjp/zy3;` (abstract ktor response) then
+                      Result.constructor-impl(p1) and only exceptionOrNull-impl
+                      is consulted. check-cast on null always succeeds, null is
+                      a valid Result success value, exceptionOrNull is null, so
+                      the error-log branch is skipped and the value is dropped.
+  end    (Lxjp/gx9;)  compared only against COROUTINE_SUSPENDED, then dropped.
+
+So `return null` is indistinguishable from a successful beat to every caller,
+and no HTTP request, URL string or radio wake happens.
+
+WHAT STAYS LOCAL. Only the network send is removed, exactly as the perf stub
+does. The 30 s loop still runs and still writes elapsed seconds into MMKV under
+the sha256("wine_usage:…") key (Lxjp/gx9; default branch and Lxjp/kx9;->f()),
+kx9->a()/b()/c()/e() still resolve ids for local use, and the session Job
+lifecycle is untouched — so nothing that reads local playtime changes
+behaviour. (The in-app playtime SCREEN is already empty on this build: that is
+the documented trade-off of the base getUserPlayTimeList stub in
+apply_privacy_patches.py, not a new regression from this patch.)
+
+===========================================================================
+
+Both stubs are delivered through the SAME shadow-dex mechanism as the rumble
+hooks, so the plugin's base.apk is never modified and its SHA-256 identity
+record stays valid. Run this alongside apply_plugin_rumble_patches.py, before
 build_plugin_shadow_dex.py.
 
 Usage:
     python3 apply_plugin_privacy_patches.py <decompiled_plugin_dir>
 """
+import os
 import re
 import sys
 from pathlib import Path
 
+# --- channel 1: device-performance session-summary uploader ----------------
 UPLOADER = "smali/xjp/mv1.smali"
 UPLOADER_METHOD = (
     ".method public final c(JLkotlin/coroutines/jvm/internal/ContinuationImpl;)"
@@ -60,9 +164,7 @@ UPLOADER_METHOD = (
 )
 RESULT_TYPE = "Lxjp/jv1;"
 
-REG_DIRECTIVE_RE = re.compile(r"^[ \t]*\.(?:locals|registers)[ \t]+(\d+)[ \t]*\n", re.M)
-
-STUB = (
+UPLOADER_STUB = (
     "\n"
     "    # BH: privacy patch — drop the device-performance session-summary\n"
     "    # upload. Returns the host's own \"nothing uploaded\" result, which this\n"
@@ -74,10 +176,198 @@ STUB = (
     "    return-object v0\n"
 )
 
+# --- channel 2: WineGameUsageTracker playtime heartbeat --------------------
+HEARTBEAT_BRIDGE = "smali/xjp/jg4.smali"
+HEARTBEAT_BRIDGE_METHOD = (
+    ".method public static synthetic e(Lxjp/jg4;Ljava/lang/String;Lxjp/fs9;"
+    "Lkotlin/coroutines/jvm/internal/SuspendLambda;)Ljava/lang/Object;\n"
+)
+# The generic POST helper this bridge delegates to — proof we have the right
+# method after a plugin bump. Deliberately NOT stubbed: ~30 other plugin
+# classes post through it.
+HEARTBEAT_BRIDGE_DELEGATE = (
+    "Lxjp/jg4;->d(Ljava/lang/String;Ljava/lang/Object;"
+    "Lkotlin/jvm/functions/Function1;"
+    "Lkotlin/coroutines/jvm/internal/ContinuationImpl;)Ljava/lang/Object;"
+)
+HEARTBEAT_CALLEE = "Lxjp/jg4;->e("
+HEARTBEAT_PATHS = ("heartbeat/game/start", "heartbeat/game/update",
+                   "heartbeat/game/end")
+
+HEARTBEAT_STUB = (
+    "\n"
+    "    # BH: privacy patch — drop the WineGameUsageTracker playtime heartbeat\n"
+    "    # (heartbeat/game/start + /update every 30 s + /end). Its params carry\n"
+    "    # source_user_id = the user's Steam ID64. This static bridge is the sole\n"
+    "    # funnel for all three beats (3 call sites tree-wide, one per path, all\n"
+    "    # verified by assert_heartbeat_funnel below) and its Lxjp/fs9; parameter\n"
+    "    # type exists for nothing else, so the generic POST helper jg4->d() that\n"
+    "    # every other plugin endpoint uses stays live.\n"
+    "    # null is what all three callers already tolerate: start and end only\n"
+    "    # compare the result against COROUTINE_SUSPENDED and then drop it, and\n"
+    "    # update does `check-cast Lxjp/zy3;` (succeeds on null) then reads only\n"
+    "    # Result.exceptionOrNull. Local MMKV playtime bookkeeping is untouched.\n"
+    "    const/4 v0, 0x0\n"
+    "    return-object v0\n"
+)
+
+REG_DIRECTIVE_RE = re.compile(r"^[ \t]*\.(?:locals|registers)[ \t]+(\d+)[ \t]*\n", re.M)
+MARKER = "# BH: privacy patch"
+
 
 def die(msg):
     print(f"ERROR: {msg}", file=sys.stderr)
     sys.exit(1)
+
+
+def read(path: Path) -> str:
+    return path.read_text(encoding="utf-8", errors="replace")
+
+
+def locate_method(src: str, rel: str, header: str, what: str):
+    """Return (method_start, insertion_point, method_end) for a uniquely named
+    method, failing loud on absence / non-uniqueness / missing register
+    directive. Never bakes a line number or register into the anchor: 6.1.1
+    keeps `.line` directives in app code."""
+    n = src.count(header)
+    if n == 0:
+        die(f"{what} method not found in {rel} — re-anchor.")
+    if n != 1:
+        die(f"{what} method anchor is non-unique ({n} matches) in {rel}.")
+    start = src.index(header)
+    end = src.find("\n.end method", start)
+    if end < 0:
+        die(f"unclosed {what} method in {rel}")
+    reg = REG_DIRECTIVE_RE.search(src, start, end)
+    if not reg:
+        die(f"no .locals/.registers directive in the {what} method ({rel})")
+    if int(reg.group(1)) < 1:
+        die(f"{what} declares .locals {reg.group(1)}; the stub needs v0")
+    return start, reg.end(), end
+
+
+def smali_files(root: Path):
+    for d in sorted(os.listdir(root)):
+        if not d.startswith("smali"):
+            continue
+        sub = root / d
+        if not sub.is_dir():
+            continue
+        for dirpath, _dirs, names in os.walk(sub):
+            for name in names:
+                if name.endswith(".smali"):
+                    yield Path(dirpath) / name
+
+
+def assert_heartbeat_funnel(root: Path) -> None:
+    """Prove Lxjp/jg4;->e() is still heartbeat-only before stubbing it.
+
+    Three separate wrong privacy claims in this project's history came from
+    grepping a string literal and concluding a channel was gone, so this does
+    the opposite: it refuses to patch unless the CALL GRAPH still looks the way
+    the audit found it. Requirements, all fail-loud:
+
+      * exactly three files invoke the bridge;
+      * each of them invokes it exactly once;
+      * each of them carries exactly one heartbeat/game/* literal;
+      * the three literals are start, update and end — one each.
+
+    If a future plugin routes a non-heartbeat endpoint through the bridge, or
+    splits the heartbeat across more call sites, this fails instead of silently
+    over- or under-reaching."""
+    callers = {}
+    for path in smali_files(root):
+        text = read(path)
+        n = text.count(HEARTBEAT_CALLEE)
+        if not n:
+            continue
+        rel = path.relative_to(root).as_posix()
+        found = [p for p in HEARTBEAT_PATHS if f'"{p}"' in text]
+        callers[rel] = (n, found, sum(text.count(f'"{p}"') for p in HEARTBEAT_PATHS))
+
+    if len(callers) != 3:
+        die(f"expected exactly 3 call sites for {HEARTBEAT_CALLEE}, found "
+            f"{len(callers)}: {sorted(callers)} — the heartbeat funnel changed "
+            f"shape; re-anchor before stubbing (a non-heartbeat caller would be "
+            f"broken by this stub, a missing one would leak the Steam ID64).")
+
+    seen = []
+    for rel, (n_calls, found, n_literals) in sorted(callers.items()):
+        if n_calls != 1:
+            die(f"{rel} invokes {HEARTBEAT_CALLEE} {n_calls} times (expected 1) "
+                f"— re-verify the funnel.")
+        if len(found) != 1 or n_literals != 1:
+            die(f"{rel} carries {n_literals} heartbeat/game/* literal(s) "
+                f"{found} (expected exactly 1) — it may no longer be a pure "
+                f"heartbeat sender; re-anchor.")
+        seen.append((found[0], rel))
+
+    paths = sorted(p for p, _ in seen)
+    if paths != sorted(HEARTBEAT_PATHS):
+        die(f"the 3 bridge callers cover {paths}, not the expected "
+            f"start/update/end trio — re-anchor.")
+    for path, rel in sorted(seen):
+        print(f"  funnel ok: {rel} -> {path}")
+
+
+def stub_method(root: Path, rel: str, header: str, stub: str, what: str,
+                evidence, ok_msg: str) -> None:
+    """Insert `stub` at instruction index 0 of a method, after confirming the
+    method really is the target via `evidence` — a list of (substring, why)
+    pairs that must all appear in the method body."""
+    p = root / rel
+    if not p.is_file():
+        die(f"{rel} not found — point this at a decompiled "
+            f"com.xiaoji.egggame.plugin.pcengine tree, and re-anchor if the "
+            f"plugin version changed.")
+    src = read(p)
+    start, insert_at, end = locate_method(src, rel, header, what)
+    body = src[start:end]
+
+    for needle, why in evidence:
+        if needle not in body:
+            die(f"{rel} {what}: expected {needle} in the method body ({why}) — "
+                f"wrong method/class after a plugin bump; re-anchor before "
+                f"stubbing.")
+
+    if MARKER in src[insert_at:end]:
+        print(f"OK: {what} already stubbed")
+        return
+
+    with open(p, "w", encoding="utf-8", newline="") as f:
+        f.write(src[:insert_at] + stub + src[insert_at:])
+    print(f"OK: {ok_msg}")
+
+
+def patch_perf_uploader(root: Path) -> None:
+    # The log strings live in the LAMBDAS, not here, so identify the method the
+    # same way it was originally located: it is the one that builds the "upload
+    # start" log lambda Lxjp/hv1;, and it must return the Lxjp/jv1; result we
+    # stub with. (An earlier version of this check looked for the log string in
+    # this file and correctly refused to patch — keep the signal on real
+    # instructions.)
+    stub_method(
+        root, UPLOADER, UPLOADER_METHOD, UPLOADER_STUB,
+        "perf uploader Lxjp/mv1;->c",
+        [("Lxjp/hv1;", "it builds the upload-start log lambda"),
+         (f"{RESULT_TYPE}-><init>()V",
+          "returning this type is only safe if the method's own bail-out paths "
+          "already construct it")],
+        "Lxjp/mv1;->c: drop device_perf_session_summary upload",
+    )
+
+
+def patch_heartbeat(root: Path) -> None:
+    assert_heartbeat_funnel(root)
+    stub_method(
+        root, HEARTBEAT_BRIDGE, HEARTBEAT_BRIDGE_METHOD, HEARTBEAT_STUB,
+        "heartbeat bridge Lxjp/jg4;->e",
+        [(HEARTBEAT_BRIDGE_DELEGATE,
+          "the bridge must still delegate to the generic POST helper jg4->d, "
+          "which is what makes it the send path")],
+        "Lxjp/jg4;->e: drop heartbeat/game/{start,update,end} POSTs "
+        "(Steam ID64 leak)",
+    )
 
 
 def main():
@@ -88,56 +378,17 @@ def main():
     if not root.is_dir():
         die(f"{root} is not a directory")
 
-    p = root / UPLOADER
-    if not p.is_file():
-        die(f"{UPLOADER} not found — point this at a decompiled "
-            f"com.xiaoji.egggame.plugin.pcengine tree, and re-anchor if the "
-            f"plugin version changed.")
-    src = p.read_text(encoding="utf-8", errors="replace")
-
-    n = src.count(UPLOADER_METHOD)
-    if n == 0:
-        die("perf uploader method c(J,Continuation) not found — re-anchor.")
-    if n != 1:
-        die(f"perf uploader method anchor is non-unique ({n} matches).")
-
-    start = src.index(UPLOADER_METHOD)
-    end = src.find("\n.end method", start)
-    if end < 0:
-        die("unclosed perf uploader method")
-    reg = REG_DIRECTIVE_RE.search(src, start, end)
-    if not reg:
-        die("no .locals/.registers directive in the perf uploader method")
-    if int(reg.group(1)) < 1:
-        die(f"perf uploader declares .locals {reg.group(1)}; the stub needs v0")
-
-    # Confirm this really is the perf uploader before touching it. The log
-    # strings live in the LAMBDAS, not here, so identify the method the same way
-    # it was originally located: it is the one that builds the "upload start"
-    # log lambda Lxjp/hv1;, and it must return the Lxjp/jv1; result we stub with.
-    # (An earlier version of this check looked for the log string in this file
-    # and correctly refused to patch — keep the signal on real instructions.)
-    body = src[start:end]
-    if f"new-instance" not in body or "Lxjp/hv1;" not in body:
-        die(f"{UPLOADER} method c() does not construct the upload-start log "
-            f"lambda Lxjp/hv1; — wrong method/class after a plugin bump; "
-            f"re-anchor (find the unique method in the perf uploader class that "
-            f"builds that lambda).")
-    if f"{RESULT_TYPE}-><init>()V" not in body:
-        die(f"{UPLOADER} method c() never constructs {RESULT_TYPE} with the "
-            f"no-arg ctor, so returning one is not a shape its callers already "
-            f"handle — re-anchor before stubbing.")
-
-    if "# BH: privacy patch" in src[reg.end():end]:
-        print("OK: perf-summary upload already stubbed")
-        return
-
-    with open(p, "w", encoding="utf-8", newline="") as f:
-        f.write(src[:reg.end()] + STUB + src[reg.end():])
-    print("OK: Lxjp/mv1;->c: drop device_perf_session_summary upload")
+    print("=== Device-performance session summary ===")
+    patch_perf_uploader(root)
     print()
-    print("NOTE: add smali/xjp/mv1.smali to SHADOW_CLASSES in")
-    print("      build_plugin_shadow_dex.py so this stub ships in the shadow dex.")
+
+    print("=== WineGameUsageTracker playtime heartbeat ===")
+    patch_heartbeat(root)
+    print()
+
+    print("NOTE: smali/xjp/mv1.smali and smali/xjp/jg4.smali must both be in")
+    print("      SHADOW_CLASSES in build_plugin_shadow_dex.py so these stubs")
+    print("      ship in the shadow dex.")
 
 
 if __name__ == "__main__":
