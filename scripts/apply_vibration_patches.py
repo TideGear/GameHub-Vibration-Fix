@@ -3,6 +3,42 @@
 Apply PC-accurate vibration patches to a decompiled GameHub apktool tree.
 Supports stock 6.0.9 only.
 
+6.1.1: PARTIAL — winebus trigger only
+-------------------------------------
+GameHub 6.1.1 moved the PC/Wine engine out of the base APK into a
+separately-downloaded plugin (com.xiaoji.egggame.plugin.pcengine, loaded via the
+ComboLite framework's PluginClassLoader). In a 6.1.1 base APK:
+
+  * lib/ no longer contains libwinemu.so / libxserver.so / libvfs.so
+  * the com.winemu.* engine classes are gone; Lcom/winemu/core/gamepad/
+    GamepadServerManager survives only as a gutted shell whose onRumble(III)V is
+    `.locals 0 / return-void` and whose native methods were deleted
+  * the features.winemu Compose resource bundle is gone
+  * there is no Vibrator / CombinedVibration reference anywhere in the dex
+
+So hooks 1-3 below (the onRumble entry point and the Physical dispatch/stop
+methods) have no target and are NOT applied on 6.1.1 — restoring dual-motor
+dispatch there needs the plugin dex patched, which is out of this script's
+scope.
+
+Hook 4 IS still applicable, and that matters: `winebus.so` did NOT move into the
+plugin. Verified on-device (GameHub 6.1.1, versionCode 123): the Wine runtime is
+still a downloaded component under the app's own files dir —
+
+    files/usr/opt/wine_proton11.0-arm64x/...            <- winebus.so lives here
+    files/usr/home/components/{Fex_*, dxvk-*, turnip_*, vkd3d-proton-*, ...}
+
+which is exactly the tree BhVibrationController.ensureWinebusDurationPatchOnce()
+already walks, so the Java side needs no change. Only the TRIGGER moved: the
+6.0.9 site was the EnvBuilder constructor, which is now plugin code. We inject
+instead into the base APK's own
+`PcEnginePluginHostActivity.onCreate(Bundle)` — host code that runs in the
+`:pcengine` process on every game launch, before the plugin's Wine activity is
+created and therefore before Wine starts.
+
+Net effect on 6.1.1: **sustained rumble past SDL's ~1 s rumble_expiration is
+restored**; dual-motor low/high split is not.
+
 Hooks:
 
   1. GamepadServerManager.onRumble(III)V  — entry hook for the dispatcher
@@ -38,6 +74,7 @@ Usage:
 Fails fast: if any anchor isn't found it exits non-zero before mutating
 anything else.
 """
+import re
 import sys
 from pathlib import Path
 
@@ -79,6 +116,59 @@ VERSION_PROBES = {
         "smali_classes3/com/winemu/core/gamepad/GamepadServerManager.smali",
     ),
 }
+
+
+PLUGIN_HOST_SMALI = ("smali/com/xiaoji/egggame/plugin/pcengine/host/"
+                     "PcEnginePluginHostActivity.smali")
+PLUGIN_HOST_ONCREATE = ".method public onCreate(Landroid/os/Bundle;)V\n"
+
+WINEBUS_TRIGGER = (
+    "\n"
+    "    # BH: preload-free SDL rumble keepalive — patch every winebus.so on\n"
+    "    # disk once per process, here at the PC-engine plugin host activity's\n"
+    "    # onCreate. This runs in the \":pcengine\" process on every game launch,\n"
+    "    # before the plugin's Wine activity is created and therefore before\n"
+    "    # Wine starts. p0 is the Activity (a Context).\n"
+    "    #\n"
+    "    # 6.1.1 moved the engine into a downloaded plugin, so the 6.0.9 trigger\n"
+    "    # site (the EnvBuilder ctor) is gone — but winebus.so itself did NOT\n"
+    "    # move: it is still a Wine component under <filesDir>/usr, which is the\n"
+    "    # tree the Java patcher walks. AtomicBoolean inside the Java method\n"
+    "    # gates against repeat scans. No LD_PRELOAD changes.\n"
+    "    invoke-static {p0}, Lcom/xj/winemu/vibration/BhVibrationController;->"
+    "ensureWinebusDurationPatchOnce(Landroid/content/Context;)V\n"
+)
+
+
+def apply_611_winebus_trigger(root: Path) -> None:
+    """6.1.1 path: inject only the winebus disk-patch trigger (hook 4)."""
+    p = root / PLUGIN_HOST_SMALI
+    src = p.read_text(encoding="utf-8")
+    if "ensureWinebusDurationPatchOnce" in src:
+        print("OK: winebus trigger already injected")
+        return
+    count = src.count(PLUGIN_HOST_ONCREATE)
+    if count != 1:
+        print(f"ERROR: expected exactly 1 onCreate(Bundle) in "
+              f"{PLUGIN_HOST_SMALI}, found {count} — re-anchor.",
+              file=sys.stderr)
+        sys.exit(1)
+    start = src.index(PLUGIN_HOST_ONCREATE)
+    reg = re.search(r"^[ \t]*\.locals[ \t]+\d+[ \t]*\n", src[start:], re.M)
+    if not reg:
+        print("ERROR: no .locals directive in PcEnginePluginHostActivity."
+              "onCreate — re-anchor.", file=sys.stderr)
+        sys.exit(1)
+    pos = start + reg.end()
+    with open(p, "w", encoding="utf-8", newline="") as f:
+        f.write(src[:pos] + WINEBUS_TRIGGER + src[pos:])
+    print("OK: PcEnginePluginHostActivity.onCreate: winebus disk-patch trigger")
+    print()
+    print("NOTE: on 6.1.1 only the winebus keepalive (sustained rumble past")
+    print("      SDL's ~1 s expiration) is restored. The dual-motor low/high")
+    print("      dispatch hooks target GamepadServerManager / the Physical")
+    print("      vibrator class, which now live in the downloaded PC-engine")
+    print("      plugin and are not patchable from the base APK.")
 
 
 def detect_version(root: Path) -> str:
@@ -283,6 +373,17 @@ def main():
     if not root.is_dir():
         print(f"ERROR: {root} is not a directory", file=sys.stderr)
         sys.exit(2)
+
+    # 6.1.1+ ships the engine as a downloaded plugin, so only the winebus
+    # trigger (hook 4) has a target in the base APK. Detect that layout first —
+    # its probe is the presence of the plugin host activity — and take the
+    # reduced path rather than failing on the three missing dispatch hooks.
+    if (root / PLUGIN_HOST_SMALI).is_file():
+        print("Detected GameHub base version: 6.1.1 "
+              "(PC engine is a downloaded plugin)")
+        print()
+        apply_611_winebus_trigger(root)
+        return
 
     version = detect_version(root)
     print(f"Detected GameHub base version: {version}")

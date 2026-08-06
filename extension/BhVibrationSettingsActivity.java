@@ -117,6 +117,34 @@ public class BhVibrationSettingsActivity extends Activity {
         titleRow.setLayoutParams(titleLp);
         root.addView(titleRow);
 
+        // Degraded-capability banner. On 6.1.1 the dual-motor dispatch lives in
+        // the downloaded PC-engine plugin, and BhPluginShadow declines to shadow
+        // a plugin version it wasn't built against — that must not be a silent
+        // downgrade, so say so here as well as in the launch-path Toast.
+        String shadowStatus = null;
+        try {
+            // Context-taking overload: the decision is made in the ":pcengine"
+            // process, so it reaches us via the SharedPreferences mirror.
+            shadowStatus = com.xj.winemu.vibration.BhPluginShadow
+                    .getStatusMessage(this);
+        } catch (Throwable ignored) {
+            // Older/partial builds without the shadow helper: no banner.
+        }
+        if (shadowStatus != null && !shadowStatus.isEmpty()) {
+            TextView warn = new TextView(this);
+            warn.setText(shadowStatus);
+            warn.setTextSize(12f);
+            warn.setTextColor(0xFFFFC107);
+            warn.setPadding(dp(10), dp(8), dp(10), dp(8));
+            warn.setBackgroundColor(0x33FFC107);
+            LinearLayout.LayoutParams warnLp = new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                    ViewGroup.LayoutParams.WRAP_CONTENT);
+            warnLp.bottomMargin = dp(10);
+            warn.setLayoutParams(warnLp);
+            root.addView(warn);
+        }
+
         // Landscape: Mode + Intensity side-by-side (keeps the dialog short).
         // Portrait: stack Intensity below Mode so we can shrink the dialog
         // width and avoid clipping on phone screens.

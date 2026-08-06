@@ -10,37 +10,225 @@ It is built on GameHub v6.x and heavily uses the work of
 [@The412Banner](https://github.com/The412Banner) as well as others. It
 also includes my own PC-accurate controller vibration fixes.
 
+> ### ⚠️ 6.1.1 status: sustained rumble YES, dual-motor NO
+>
+> GameHub **6.1.1 moved the PC/Wine engine out of the APK** into a
+> separately-downloaded plugin, which splits the vibration work in two:
+>
+> - **Sustained rumble past 1 s still works.** `winebus.so` did *not* move into
+>   the plugin — it is still a downloaded Wine component under `<filesDir>/usr`
+>   (verified on-device). Only the trigger moved, and the new one is a base-APK
+>   hook, so this is fully restored.
+> - **Dual-motor low/high dispatch is offline.** Its hooks target
+>   `GamepadServerManager` and the Physical vibrator class, which now live in
+>   the plugin dex. The per-game "PC Vibration Settings" row still appears but
+>   its Mode/Intensity settings are not consumed yet, so it is a UI stub.
+>
+> See [PC engine plugin](#pc-engine-plugin-611) for the mechanism.
+> Everything else works on 6.1.1: privacy, local layout export (import needs one
+> more re-anchoring pass), and the "Online Update" badge fix.
+
 What you get over stock GameHub:
 
 - **Privacy patches** — Login-friendly port of bannerhub-revanced's privacy
   patch set. Kills Firebase Analytics, Google Play Services Measurement, Mob
-  Push SDK, the XiaoJi heartbeat / playtime tracker, both vgabc.com /events
-  endpoints, and the JieLi OTA phone-home. Steam / GOG / Epic / Wine /
+  Push SDK, the XiaoJi heartbeat / playtime tracker, the vgabc.com /events
+  endpoint, and the JieLi OTA phone-home. Steam / GOG / Epic / Wine /
   account login are untouched. Full channel list in
   [scripts/apply_privacy_patches.py](scripts/apply_privacy_patches.py).
-- **Dual-motor low/high dispatch.** Wine games calling `XInputSetState(slot,
-  low, high)` get the two motors driven independently via Android
-  `CombinedVibration.startParallel` on ≥ 2-motor controllers. Stock GameHub
-  blends both motors into a single haptic pulse; this preserves the heavy
-  / light distinction the way the game intended.
+  (6.1.1 shrank this surface upstream: `heartbeat/game/update`,
+  `heartbeat/game/end` and the `/events` perf-config sibling no longer exist,
+  so there is less left to kill.)
+- **Dual-motor low/high dispatch.** *(offline on 6.1.1 — see the note above.)*
+  Wine games calling `XInputSetState(slot, low, high)` get the two motors
+  driven independently via Android `CombinedVibration.startParallel` on
+  ≥ 2-motor controllers. Stock GameHub blends both motors into a single haptic
+  pulse; this preserves the heavy / light distinction the way the game intended.
 - **Sustained rumble holds past 1 s.** SDL2's internal 1 s
   `rumble_expiration` auto-stops sustained rumble on stock. The APK's
   launch-time Java hook patches every app-owned `winebus.so` on disk so
   the two non-zero `SDL_JoystickRumble` call sites pass `0xffffffff` as
   the SDL duration; zero-duration stop calls still stop immediately. No
   `LD_PRELOAD`, no extra `.so` mapped into the Wine subprocess address
-  space. The offline helper
+  space. (On 6.1.1 the trigger is
+  `PcEnginePluginHostActivity.onCreate` instead of the old EnvBuilder ctor;
+  the patcher and its target tree are unchanged.) The offline helper
   [scripts/patch_winebus_rumble_duration.py](scripts/patch_winebus_rumble_duration.py)
   applies the same patch to extracted components for offline use.
 - **Instant release** when the game stops rumble — no phantom-suppression
-  timer extending the motor past the actual stop call.
+  timer extending the motor past the actual stop call. *(offline on 6.1.1.)*
 - **Local export/import of on-screen control layouts.** The on-screen-controls
   "Share" / "Apply share code" flow is rerouted from XiaoJi's cloud to portable
   local `.gtheme` files via the Storage Access Framework — no cloud account, no
   HTTP. Export captures the pristine pre-CDN layout bytes (full UTF-8 fidelity);
   import skips the share-code dialog, fires a file picker, and registers the
   layout straight into `egggame.db` so it shows up in My Layouts. Works from
-  inside a running game (the `:wine` process) too.
+  inside a running game (a separate process — `:pcengine` on 6.1.1, `:wine`
+  before it) too.
+- **Reliable "Online Update" badges.** Stock GameHub only runs the Steam
+  update check on a couple of lazy paths (the launch resolver and a few
+  detail/refresh flows) and the badges just read the last cached result, so
+  the red dot lags reality — you can launch a game several times before an
+  available update shows up. GameScrub adds a background worker
+  ([BhSteamUpdateChecker](extension/BhSteamUpdateChecker.java)) that
+  periodically, and whenever the app returns to the foreground, re-runs the
+  host's own per-game update check for every installed Steam game and
+  refreshes the badge flow. The check is a network query to Steam's Content
+  Manager via GameHub's embedded native Steam client — it does **not** need
+  the game (Wine) running, only that the app is open and the Steam session
+  is connected. Live home/library badges refresh instantly; the game-detail
+  dot is correct on the next menu open. No restart.
+
+### PC engine plugin (6.1.1)
+
+GameHub 6.1.1 (versionCode 123, targetSdk 36, 4 stock dex) extracted the whole
+PC/Wine engine from the base APK into a plugin that the app downloads at
+runtime. Verified against the decompiled APK:
+
+- `libwinemu.so`, `libxserver.so`, `libvfs.so` and `libgpuinfo.so` are **gone**
+  from `lib/arm64-v8a` (which is now arm64-only).
+- The `com.winemu.*` engine implementation is gone.
+  `com.winemu.core.gamepad.GamepadServerManager` survives as a gutted shell:
+  `onRumble(III)V` is `.locals 0 / return-void` and the `native*` rumble /
+  gamepad-buffer methods are deleted. There is no `Vibrator` or
+  `CombinedVibration` reference anywhere in the dex.
+- The `features.winemu` Compose resource bundle is gone, and `WineActivity` is
+  now an `activity-alias` onto
+  `com.xiaoji.egggame.plugin.pcengine.host.LegacyPcEngineActivityTrampoline`.
+- The plugin is fetched from `game/mobile/v1/plugin/latest`, installed as
+  `<filesDir>/plugins/<pluginId>/base.apk` (native libs extracted to
+  `.../lib/arm64-v8a/`), and loaded through the ComboLite framework
+  (`com.combo.core.runtime.loader.PluginClassLoader`, a `DexClassLoader` whose
+  parent is the host classloader).
+
+**Integrity model.** ComboLite's own `ValidationStrategy` is set to `Insecure`
+by the host (`pyi.j()` → `PluginManager.setValidationStrategy(Insecure)`), so
+the framework does **not** verify the plugin's APK signature — a `Strict` mode
+exists but is off. XiaoJi's only gate is trust-on-first-use: `pyi.w(File)`
+SHA-256-hashes the installed `base.apk`, `pyi.J0()` writes a **plaintext**
+record to `<filesDir>/pc_engine_active_plugin_identity`
+(`format`/`pluginId`/`versionCode`/`sha256`/`schemaVersion`/`abi`/`installedPath`),
+and `pyi.A()` re-hashes on load and compares, throwing *"does not match its
+committed record"* on mismatch. There is no server signature and no embedded
+key, so a patched plugin can be re-validated by recomputing that record.
+
+**On-device layout (GameHub 6.1.1, versionCode 123).** Confirmed from the app's
+own logs under `/sdcard/Android/data/com.xiaoji.egggame/files/logs/`:
+
+```
+files/plugins/com.xiaoji.egggame.plugin.pcengine/base.apk        the plugin (v101, ~21.7 MB)
+files/plugins/com.xiaoji.egggame.plugin.pcengine/lib/arm64-v8a   its extracted native libs
+files/usr/opt/wine_proton11.0-arm64x/…                           the Wine tree — winebus.so
+files/usr/home/components/{Fex_*, dxvk-*, turnip_*, vkd3d-proton-*, …}
+```
+
+The `pluginId` is the literal string `com.xiaoji.egggame.plugin.pcengine`, so the
+install path is deterministic rather than a UUID.
+
+**The two halves land very differently.**
+
+- *Sustained rumble (winebus)* — **done, no plugin access needed.** The critical
+  fact is in the layout above: `winebus.so` lives in the **Wine component tree**,
+  not in the plugin, so it was never behind the plugin's integrity check at all.
+  The only thing that moved was the trigger. `apply_vibration_patches.py` now
+  injects `BhVibrationController.ensureWinebusDurationPatchOnce(this)` into
+  `PcEnginePluginHostActivity.onCreate` — base-APK host code that runs in the
+  `:pcengine` process on every launch, before Wine starts. The Java patcher walks
+  `getFilesDir()` recursively and so finds the Wine tree unchanged.
+- *Dual-motor dispatch* — **still blocked.** Its hooks target
+  `GamepadServerManager` and the Physical vibrator class, which are inside the
+  plugin dex. That dex is versioned independently of the base APK and is not
+  available at build time, so restoring dual-motor needs runtime dex rewriting
+  with instruction-sequence anchoring that re-derives on every plugin update,
+  plus re-committing the identity record described above.
+
+Patched plugin code *can* call back into the GameScrub extension classes:
+`PluginClassLoader.loadClass` falls back to `super.loadClass` (parent-first) on a
+local miss, so `com.xj.winemu.*` resolves from the host dex without editing
+ComboLite's delegation prefix list.
+
+#### What happens when the plugin updates
+
+Nothing overwrites the fix — it lives entirely in *our* APK (the shadow dex asset
+plus the `PluginClassLoader` hook), and the plugin's `base.apk` is never touched.
+The real risk is the reverse: our shadow classes are copies of a **specific**
+plugin build, and R8 re-letters every build, so letting a stale shadow win over a
+newer plugin is how you get `NoSuchFieldError` or verifier faults deep inside
+Wine.
+
+`BhPluginShadow` therefore gates on the installed plugin's `versionCode` (read
+from the host's own identity record) matching
+`EXPECTED_PLUGIN_VERSION_CODE`. On a mismatch it returns the dexPath unchanged:
+dual-motor turns **off**, the engine keeps working. Degraded, never broken.
+
+That degradation is deliberately **not silent** — it is reported three ways:
+
+1. a one-shot **Toast on the game-launch path**, naming both versions and saying
+   what to do ("Update GameScrub to restore dual-motor");
+2. a **warning banner** at the top of the PC Vibration Settings dialog;
+3. a `BhPluginShadow` **logcat** line.
+
+Because the plugin loads in the `:pcengine` process while the settings dialog
+runs in the main UI process, the status is mirrored through a SharedPreferences
+file (same cross-process trick `BhMenuGameId` uses); the mirror is cleared as
+soon as a load succeeds, so the banner disappears once dual-motor is working.
+
+**Sustained rumble is immune to plugin updates** — it patches the Wine component
+tree, not the plugin, and its trigger doesn't touch plugin internals. Only
+dual-motor is version-pinned.
+
+To restore dual-motor after a plugin update: re-run
+`apply_plugin_rumble_patches.py` and `build_plugin_shadow_dex.py` against the new
+plugin, bump `EXPECTED_PLUGIN_VERSION_CODE`, rebuild. Both scripts fail loudly on
+a missing anchor, and the shadow builder refuses to assemble an unpatched tree,
+so a re-anchor can't silently produce a no-op build.
+
+**Extracting the plugin is not currently possible on a stock install.** All four
+routes are closed on a retail device: `run-as` fails (the release APK is not
+debuggable, `flags=0x0`), there is no root, `adb backup` returns an empty
+47-byte archive (Android 12+ excludes app data for non-debuggable apps), and the
+`plugin/latest` endpoint returns HTTP 402 without the app's auth token. Getting
+the plugin therefore needs either a rooted/emulator device or a debuggable build
+installed fresh — and since stock is signed `CN=gamesir` and GameScrub with the
+repo testkey, installing over it requires an uninstall, which wipes installed
+games, the Steam session, and layouts.
+
+### Reliable "Online Update" badges
+
+The check itself is the host's own code, not a reimplementation. The Steam
+update repository (`Lwvo;`, "SteamGameRepositoryScope") compares the locally
+installed build id (from `steamapps/appmanifest_<appId>.acf`) against the
+target build id fetched over the embedded `SteamBridgeClient`, and on a newer
+target broadcasts the appId through the badge flow — exactly
+what the menu/library dots consume. Stock triggers that check only from
+`Ljgk;->r` (launch) and a few detail flows; there is no periodic sweep and no
+time-throttle, which is the entire cause of the lag.
+
+`BhSteamUpdateChecker` closes the gap without reimplementing anything:
+
+- **Enumeration is a version-independent filesystem scan** of
+  `<filesDir>/Steam/steamapps/appmanifest_<appId>.acf` — a manifest's presence
+  is the host's own definition of "installed", so this is precisely the set
+  worth keeping fresh. No DI, no obfuscated types.
+- **Each check reproduces the host's own bulk-sweep dispatch byte-for-byte.**
+  GameHub's own per-app dispatch (`Lvi0;->j`) builds `new Lo0a(appId, null, flag)` — a
+  compiler-generated suspend-lambda whose `invokeSuspend` calls
+  `Ljao;->x(appId, …)` (check + badge broadcast) — and runs it via
+  `Lg8i;->L(Dispatchers.IO, block, continuation)` == `withContext(IO) { … }`.
+  We drive that same `Lo0a;` block through the same `withContext` reflection
+  bridge [BhVjoyImporter](extension/BhVjoyImporter.java) already uses for the
+  host's save coroutine (a synthetic `Continuation` proxy on the `Lov3;`
+  interface — never on `jao.x`'s abstract `ContinuationImpl` param). Because `Lo0a;` *is*
+  the `Lpv3;` handed to `oaj.J`, no proxy touches the abstract type.
+- **Cadence:** first sweep ~30 s after launch (let the Steam session settle),
+  then every 30 min while the app is alive, plus a debounced sweep on app
+  foreground so a badge is fresh when you actually look. One check at a time,
+  each with a 30 s ceiling, so a hung bridge or logged-out session just logs
+  and is retried next sweep.
+
+The only smali edit is a single `start(Context)` call injected into the
+Application's `onCreate` ([scripts/apply_update_check_patches.py](scripts/apply_update_check_patches.py));
+everything else lives in the extension class.
 
 ### Preload-free architecture
 
@@ -89,7 +277,7 @@ The per-game scoping works even from pre-launch menus where no
 injected into each of the three menu builders reads the game id from
 the menu-data parameter and mirrors it to a SharedPreferences file
 (cross-process because the menu builders run in the main UI process and
-the eventual launch consumer runs in the `:wine` process). The row's
+the eventual launch consumer runs in a separate process). The row's
 click handler reads back via
 [BhMenuGameId.getCaptured()](extension/BhMenuGameId.java).
 
@@ -122,8 +310,10 @@ catches it, deletes its temp file, and treats the publish as failed, so there
 is no cloud upload, no "Cloud Backup Code" dialog, and no navigation to the
 cloud-share tab.
 
-**Import.** The "Import Layout" share-code dialog is skipped entirely. The
-shared `Ly99;->Z` resolver short-circuit (the same one that carries the menu
+**Import.** *(6.1.1: needs one more re-anchoring pass — see the note at the end
+of this section. Export is unaffected.)* The "Import Layout" share-code dialog
+is skipped entirely. The
+shared `StringResourcesKt.stringResource` resolver short-circuit (the same one that carries the menu
 labels) detects the dialog's title resource key at composition time and calls
 [BhVjoyShareHook.kickImportFromDialogOpen](extension/BhVjoyShareHook.java),
 which fires an `ACTION_OPEN_DOCUMENT` picker and dismisses the briefly-composed
@@ -137,9 +327,21 @@ Layouts. The `/vcontroller/getMapByShareCode` method is also hooked
 (`interceptApply`) as a defensive fallback in case the dialog title key is ever
 renamed.
 
+**Import status on 6.1.1.** The four bytecode hooks re-discovered themselves
+unchanged (they are anchored on the `vcontroller/*` URL fragments, not R8
+letters — the share repo has drifted `Lrqn;`→`Lkkm;`→`Lqkm;`→`Laun;`→`Lpat;`
+across bases and the locator has never needed editing). What 6.1.1 did break is
+the *import* half of [BhVjoyImporter](extension/BhVjoyImporter.java): R8 now
+obfuscates `VJoyLayout` and `VirtualKeyLayoutDao`, whose kept FQNs it relied on
+(`AppDatabase` itself still keeps its name), and the host save-coroutine block
+class changed shape. Those three anchors need re-deriving before import works
+again. Export needs none of them, so save-to-file is unaffected.
+[BhVjoyJson](extension/BhVjoyJson.java) already resolves the layout class from a
+live instance rather than by name, so it needed no change.
+
 **Cross-process / in-game.** `BhSafProxyActivity` is registered
 `android:multiprocess="true"` so it launches in the caller's process — the
-import `CompletableFuture` can't bridge the main↔`:wine` boundary, and the
+import `CompletableFuture` can't bridge the cross-process boundary, and the
 export path passes its bytes via Intent extras so it is process-agnostic.
 
 `scripts/apply_export_controls_patches.py` anchors the four bytecode hooks by
@@ -152,37 +354,49 @@ if any anchor is missing or non-unique.
 ## Build
 
 CI workflow: `.github/workflows/build.yml` — triggers on `workflow_dispatch`
-or push of a `v*-6.0.9*` tag.
+or push of a `v*-6.1.1*` tag.
 
 One-time setup: upload the original GameHub APK as an asset on a release
-tagged `base-apk-6.0.9` in this repo (e.g.
-`GameHub_6.0.9_ae6f18b57c111d3c4e5ce7c9932b5a66.apk`). The workflow
+tagged `base-apk-6.1.1` in this repo (e.g.
+`GameHub_6.1.1_bdbf223c9f36bbd862fa39c6a2841a60.apk`). The workflow
 `gh release download`s from there.
 
-`scripts/apply_vibration_patches.py` patches stock 6.0.9 using the
-ProGuard names `pz7` (Physical: rumble `h(II)V`, stop `g()V`) and `iqn`
-(env builder; the winebus disk-patch trigger rides its `<init>` ctor where
-the Context is still live, since 6.0.7 moved the env-var join out of the
-builder). Full anchor set and rename map are at the top of the script. Note
-6.0.9 strips `.line` debug directives from app code, so anchors are built
-from instruction sequences only.
+`scripts/apply_vibration_patches.py` is **not run on 6.1.1** — the engine it
+hooks now lives in the downloaded plugin (see
+[PC engine plugin](#pc-engine-plugin-611)). Pointed at a 6.1.1 tree it detects
+the plugin host activity and exits with an explanation rather than a misleading
+"anchor not found". The CI step is commented out for the same reason. Its 6.0.9
+anchor set (`pz7` Physical rumble `h(II)V` / stop `g()V`, `iqn` env builder
+ctor) is preserved at the top of the script for whenever the engine returns.
 
 `scripts/apply_privacy_patches.py` is a port of the bannerhub-revanced
 privacy patch set. Manifest layer adds Firebase kill-switch meta-data,
 disables Google Play Services Measurement components, strips ad-ID
 permission declarations, disables every Mob / cn.fly component, and
 removes the JieLi gamepad-firmware native libs. Smali layer stubs the
-two `statistic-gamehub-api.vgabc.com` event endpoints, the four
-heartbeat/playtime methods, the OTA URL register, and the three Mob SDK
-bootstrap invokes. Anchors and the full deliberate-skip list live at the
-top of the script. Trade-off worth flagging: GameHub's in-app per-game
-playtime UI renders empty (Steam's own playtime on your Steam profile
-is unaffected — Steam tracks playtime independently).
+`statistic-gamehub-api.vgabc.com` /events endpoint (`Ll88;->a`), the two
+surviving heartbeat/playtime methods (`Lvho;->a` start POST, `Lby9;->e`
+getUserPlayTimeList), the OTA URL register (`Lej6;->d`), and the three Mob SDK
+bootstrap invokes (`AndroidApp.c` ×2, `Ljku;->E`), plus the Firebase
+auto-init re-enable in `AndroidApp.b`. Anchors and the full deliberate-skip
+list live at the top of the script.
+
+6.1.1 notes: `.line` debug directives are back in app code (6.0.7–6.0.9
+stripped them), so index-0 stubs are inserted after the `.locals` directive and
+invoke removals are located by callee — no line numbers or registers are baked
+into anchors. Upstream also shrank this surface: `heartbeat/game/update`,
+`heartbeat/game/end` and the `/events` perf-config sibling are gone from the
+APK, so two heartbeat stubs replace 6.0.9's three and the perf-config stub is
+retired. Trade-off worth flagging: GameHub's in-app per-game playtime UI
+renders empty (Steam's own playtime on your Steam profile is unaffected —
+Steam tracks playtime independently).
 
 `scripts/apply_menu_patches.py` injects the per-game "PC Vibration
-Settings" row into the three per-game menu surfaces (`Llc7;->a` game
-detail, `Lqqc;->f` library-tile popup, `Lxdc;->b0` library-list 3-dot),
-short-circuits the Compose resource resolver (`Ly99;->Z`) for our label key, registers
+Settings" row into the three per-game menu surfaces (`Lbk9;->a` game
+detail, `Le1g;->f` library-tile popup, `Lfel;->o` library-list 3-dot),
+short-circuits the Compose resource resolver
+(`org.jetbrains.compose.resources.StringResourcesKt.stringResource` — a real
+name on 6.1.1, no longer an R8 letter) for our label key, registers
 [BhVibrationSettingsActivity](extension/BhVibrationSettingsActivity.java)
 in the manifest, and appends the CVR resource entry to each features.home
 locale bundle. Heavier R8 fragility than the other scripts — fails loudly
@@ -197,7 +411,7 @@ and injects four bytecode hooks (`interceptShare` at `shareMap`,
 `interceptApply` at `getMapByShareCode`, `interceptUpload` at `uploadGtheme`,
 `captureShareName` at the share-name method). Anchors by server-stable URL
 fragments and the upload call-relationship rather than R8 letters; the label
-relabels and the import-dialog skip reuse the `Ly99;->Z` resolver
+relabels and the import-dialog skip reuse the `StringResourcesKt` resolver
 short-circuit installed by `apply_menu_patches.py`. Fails loudly if any anchor
 is missing or non-unique.
 
@@ -207,19 +421,23 @@ The pipeline:
 2. Strip `android:usesPermissionFlags` and
    `android:enableOnBackInvokedCallback` from the manifest (apktool 2.9.3's
    bundled aapt2 doesn't know them; cosmetic, harmless)
-3. `python3 scripts/apply_vibration_patches.py` — four smali hooks
+3. ~~`python3 scripts/apply_vibration_patches.py`~~ — skipped on 6.1.1; the
+   engine it hooks moved into the downloaded plugin
 4. `python3 scripts/apply_privacy_patches.py` — manifest + smali +
    native-lib strip
 5. `python3 scripts/apply_menu_patches.py` — per-game menu row + manifest
    activity + CVR resource + resolver short-circuit + 3× gameId capture
 6. `python3 scripts/apply_export_controls_patches.py` — VJoy export/import
    manifest activity + 4 URL-anchored bytecode hooks + CVR labels
-7. `apktool b`
-8. `javac + d8` of the `extension/Bh*.java` files → next free
-   `classesN.dex` slot (classes6 on 6.0.9's 5 stock dex files; computed
+7. `python3 scripts/apply_update_check_patches.py` — one `start(Context)`
+   call injected into `AndroidApp.onCreate` for the background update-badge
+   checker
+8. `apktool b`
+9. `javac + d8` of the `extension/Bh*.java` files → next free
+   `classesN.dex` slot (classes5 on 6.1.1's 4 stock dex files; computed
    dynamically), inject into the APK
-9. `zipalign + apksigner` with `testkey.pk8` / `testkey.x509.pem`
-10. Upload as `GameScrub-6.0.9.apk`
+10. `zipalign + apksigner` with `testkey.pk8` / `testkey.x509.pem`
+11. Upload as `GameScrub-6.1.1.apk`
 
 ## Project layout
 
@@ -227,9 +445,10 @@ The pipeline:
 extension/
   BhMenuGameId.java                per-game id capture for injected menu
                                    rows; SharedPreferences mirror crosses
-                                   the main↔":wine" process boundary.
+                                   the cross-process boundary.
   BhMenuRowClick.java              Compose menu-row reflection helpers
-                                   (Luhd / Lxoc / Lpcd ctors) + Ly99.Z
+                                   (Ll2h / Lizf / Lovg ctors) +
+                                   StringResourcesKt
                                    resolver short-circuit + click handler
                                    that launches BhVibrationSettingsActivity
                                    scoped to BhMenuGameId.getCaptured().
@@ -253,10 +472,19 @@ extension/
   BhVjoyJson.java                  reflection bridge to the host's
                                    polymorphic VJoyLayoutJson for layout
                                    JSON <-> object conversion.
+  BhSteamUpdateChecker.java        background worker (started from
+                                   AndroidApp.onCreate) that enumerates
+                                   installed Steam appIds from
+                                   steamapps/appmanifest_*.acf and re-runs
+                                   the host's own per-app update check
+                                   (Lo0a; via withContext) periodically +
+                                   on app foreground to keep the "Online
+                                   Update" badges fresh.
 
 scripts/
   apply_vibration_patches.py       smali hooks against a decompiled
-                                   GameHub 6.0.9 apktool tree.
+                                   GameHub apktool tree. NOT APPLICABLE to
+                                   6.1.1 (engine moved to the plugin).
   apply_privacy_patches.py         manifest + smali + native-lib edits
                                    that kill Firebase / GMS Measurement
                                    / Mob Push / XiaoJi events + heartbeat
@@ -268,6 +496,9 @@ scripts/
                                    4 URL-anchored bytecode hooks + CVR
                                    labels. Reroutes cloud share to local
                                    .gtheme files.
+  apply_update_check_patches.py    injects one BhSteamUpdateChecker.start()
+                                   call into AndroidApp.onCreate for the
+                                   background update-badge checker.
   patch_winebus_rumble_duration.py offline preload-free patch for
                                    extracted winebus.so (aarch64 + x86_64).
 

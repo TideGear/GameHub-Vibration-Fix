@@ -4,14 +4,24 @@ VJoy on-screen-controls export/import to/from local files.
 
 Replaces GameHub's cloud-only "share-by-code" flow for on-screen controller
 layouts with portable local `.gtheme` files. No cloud account, no HTTP.
-Supports stock 6.0.9 only.
+Supports stock 6.1.1 only.
 
-The four bytecode hooks are URL-fragment-anchored (not R8-letter-anchored),
-so they re-discover their methods unchanged on 6.0.9 (the VJoy share repo
-moved Lrqn; -> Lkkm; -> Lqkm; -> Laun; but the script locates it by the
-vcontroller/* URL strings). Only the resolver dependency moved: the short-circuit installed by
-apply_menu_patches.py is now on Ly99;->c0 (was Lxd3;->l1), and the sibling
-resolver variants extended here are Ly99;->d0/J/K (was Lxd3;->m1/P0/Q0).
+The four bytecode hooks are URL-fragment-anchored (not R8-letter-anchored), and
+that paid off again on 6.1.1: they re-discovered their methods with NO changes
+to this script (the VJoy share repo has moved Lrqn; -> Lkkm; -> Lqkm; -> Laun;
+-> Lpat; across bases, and the share-name class Lsun; -> Lhbt;, but the script
+locates them by the vcontroller/* URL strings and the upload
+call-relationship). What did need re-anchoring on 6.1.1:
+
+  * the resolver family is no longer R8-obfuscated — the short-circuit
+    installed by apply_menu_patches.py is now on the real
+    org.jetbrains.compose.resources.StringResourcesKt#stringResource
+    (was Ly99;->c0 / Lxd3;->l1), and the siblings extended here are that
+    class's stringResource-with-args and two getString overloads
+    (was Ly99;->d0/J/K, Lxd3;->m1/P0/Q0).
+  * the "Upload original" row hide moved class (Ldl7; -> Lfk;) and is now
+    anchored structurally on Compose's own unobfuscated skip check rather than
+    on literal registers — see patch_hide_upload_original.
 
 Port of bannerhub-revanced's ExportControlsPatch + ExportControlsManifestPatch
 + ExportControlsResourcesPatch (commit ab43968) — translated from ReVanced
@@ -36,7 +46,7 @@ EXPORT
 IMPORT
 ------
   The "Import Layout" share-code dialog is skipped entirely: the shared
-  composition-time string resolver (Ly99;->c0, hooked by
+  composition-time string resolver (StringResourcesKt.stringResource, hooked by
   apply_menu_patches.py) detects the dialog title key and fires a SAF file
   picker (ACTION_OPEN_DOCUMENT) immediately — see
   BhMenuRowClick.maybeResolveCustomLabel, which calls
@@ -50,10 +60,11 @@ Unlike the sibling scripts, this one does NOT hardcode R8-mangled class
 letters. It locates the four hook sites by SERVER-STABLE URL fragments
 (`vcontroller/shareMap`, `/getMapByShareCode`, `/uploadGtheme`) and by the
 call-relationship between the share-name method and the upload method. On
-6.0.7 the VJoy share repo resolves to Lkkm; (was Lrqn; on 6.0.4) with i/d/j
-the share/apply/upload methods, but the script never hardcodes those: the
-URL fragments survive R8 reshuffles and the dex-collapse (6->5), so the same
-locator code finds the methods regardless of the regenerated letters.
+6.1.1 the VJoy share repo resolves to Lpat; with i/d/j the share/apply/upload
+methods, but the script never hardcodes those: the URL fragments survive R8
+reshuffles and every dex-count change so far (6->5 in 6.0.7, 5->4 in 6.1.1),
+so the same locator code finds the methods regardless of the regenerated
+letters.
 
 Register choices (p1 for share/upload, p3 for the name capture) are the same
 device-verified offsets the upstream Kotlin patch uses: the repo methods are
@@ -71,8 +82,9 @@ the other extension/ files):
   com.xj.winemu.exportcontrols.BhVjoyImporter
   com.xj.winemu.exportcontrols.BhVjoyJson
 
-Depends on apply_menu_patches.py having installed the Ly99;->c0 resolver
-short-circuit (the import-dialog skip and all label relabels ride on it).
+Depends on apply_menu_patches.py having installed the StringResourcesKt
+resolver short-circuit (the import-dialog skip and all label relabels ride
+on it).
 """
 import base64
 import re
@@ -111,12 +123,13 @@ def die(msg):
 # Version detection (parity with the sibling scripts — 6.0.4 only).
 # ---------------------------------------------------------------------------
 
-# See apply_vibration_patches.py for why the 6.0.4 ab8/bg5 probe is unusable
-# on 6.0.7 (letters reused). Anchor on the renamed app class instead.
+# Same probe pair as the sibling scripts: the app class (which moved to
+# smali_classes2 in 6.1.1) plus the PC-engine plugin host activity, which only
+# exists from 6.1.1.
 VERSION_PROBES = {
-    "6.0.9": (
-        "smali_classes3/com/xiaoji/egggame/AndroidApp.smali",
-        "smali_classes3/com/winemu/core/gamepad/GamepadServerManager.smali",
+    "6.1.1": (
+        "smali_classes2/com/xiaoji/egggame/AndroidApp.smali",
+        "smali/com/xiaoji/egggame/plugin/pcengine/host/PcEnginePluginHostActivity.smali",
     ),
 }
 
@@ -295,7 +308,7 @@ def locate_caller(files, callee_ref, label):
     The (long gameId, String name) shape — NOT the total param count — is the
     device-verified invariant that pins this method AND justifies the p3
     register for captureShareName (a wide long occupies p1+p2, so the String
-    name lands at p3). 6.0.4 had 4 declared params here; 6.0.9's Lsun;->j has
+    name lands at p3). 6.0.4 had 4 declared params here; 6.1.1's Lhbt;->j has
     5 (J, String, Z, Lvin;, Continuation) — the extra params trail the String,
     so p3 still holds. The other caller of the upload method (a 1-param
     coroutine SuspendLambda) is excluded by the param-shape requirement."""
@@ -419,7 +432,8 @@ def patch_bytecode(root: Path) -> None:
     inject_at_entry(apply_, (
         "    # BH VJoy import (defensive fallback): present a SAF file picker\n"
         "    # instead of a cloud share-code lookup. Normally redundant — the\n"
-        "    # Lxd3;->l1 resolver fires SAF at dialog composition first.\n"
+        "    # StringResourcesKt.stringResource resolver fires SAF at dialog\n"
+        "    # composition first.\n"
         f"    invoke-static {{}}, {HANDLER}->interceptApply()Ljava/lang/Object;\n"
         "    move-result-object v0\n"
         "    if-eqz v0, :bh_apply_fallthrough\n"
@@ -448,7 +462,7 @@ def patch_bytecode(root: Path) -> None:
 
     # --- Hooks 5-7: extend the Ly99 resource-resolver short-circuit to the
     # non-Compose and format-args variants. apply_menu_patches.py installs the
-    # hook on Ly99;->c0 (Compose stringResource, single key; 6.0.4 Lxd3;->l1);
+    # hook on StringResourcesKt.stringResource (single key; 6.0.9 Ly99;->c0);
     # but the host also fetches resource strings via three sibling methods,
     # all taking the same Llok; descriptor (6.0.4 Lell;):
     #
@@ -471,27 +485,40 @@ def patch_bytecode(root: Path) -> None:
 
 RESOLVER_HANDLER = "Lcom/xj/winemu/vibration/BhMenuRowClick;"
 
+# 6.1.1: Compose Multiplatform's resource runtime is no longer obfuscated, so
+# these are real names (6.0.9 Ly99;->d0/J/K, 6.0.4 Lxd3;->m1/P0/Q0). Keep the
+# file path in sync with RESOLVER_FILE in apply_menu_patches.py, which installs
+# the primary short-circuit on the single-key stringResource overload in the
+# same class.
+RESOLVER_FILE = ("smali_classes4/org/jetbrains/compose/resources/"
+                 "StringResourcesKt.smali")
+SR = "Lorg/jetbrains/compose/resources/StringResource;"
+
 EXTRA_RESOLVERS = (
-    (".method public static final a0(Llok;[Ljava/lang/Object;Lgm3;I)Ljava/lang/String;",
+    (f".method public static final stringResource({SR}[Ljava/lang/Object;"
+     "Landroidx/compose/runtime/Composer;I)Ljava/lang/String;",
      "bh_m1_fallthrough",
-     "y99.d0 (Compose stringResource with format args; was xd3.m1)"),
-    (".method public static final G(Llok;Lov3;)Ljava/lang/Object;",
+     "StringResourcesKt.stringResource (Compose, format args; was y99.d0)"),
+    (f".method public static final getString({SR}Lkotlin/coroutines/Continuation;)"
+     "Ljava/lang/Object;",
      "bh_p0_fallthrough",
-     "y99.J (suspend getString; was xd3.P0)"),
-    (".method public static final H(Llok;[Ljava/lang/Object;Lov3;)Ljava/lang/Object;",
+     "StringResourcesKt.getString (suspend; was y99.J)"),
+    (f".method public static final getString({SR}[Ljava/lang/Object;"
+     "Lkotlin/coroutines/Continuation;)Ljava/lang/Object;",
      "bh_q0_fallthrough",
-     "y99.K (suspend getString with format args; was xd3.Q0)"),
+     "StringResourcesKt.getString (suspend, format args; was y99.K)"),
 )
 
 
 def patch_extra_resolvers(root: Path) -> None:
-    p = root / "smali_classes3" / "y99.smali"
+    p = root / RESOLVER_FILE
     if not p.is_file():
-        die("smali_classes3/y99.smali not found (apply_menu_patches.py must have run)")
+        die(f"{RESOLVER_FILE} not found (apply_menu_patches.py must have run)")
     for header, label, what in EXTRA_RESOLVERS:
         body = (
             f"    # BH: short-circuit non-Compose/format-args resource lookups\n"
-            f"    # the same way Ly99;->c0 is short-circuited by the menu patch.\n"
+            f"    # the same way the single-key stringResource overload is\n"
+            f"    # short-circuited by the menu patch.\n"
             f"    invoke-static {{p0}}, {RESOLVER_HANDLER}->"
             f"maybeResolveCustomLabelNoKick(Ljava/lang/Object;)Ljava/lang/String;\n"
             f"    move-result-object v0\n"
@@ -499,7 +526,8 @@ def patch_extra_resolvers(root: Path) -> None:
             f"    return-object v0\n"
             f"    :{label}\n"
         )
-        anchor = Anchor(path=p, cls="Ly99;", header=header, params=[], ret="")
+        anchor = Anchor(path=p, cls="Lorg/jetbrains/compose/resources/StringResourcesKt;",
+                        header=header, params=[], ret="")
         inject_at_entry(anchor, body, what)
 
 
@@ -538,7 +566,7 @@ def patch_manifest(manifest_path: Path) -> None:
 # ---------------------------------------------------------------------------
 # CVR resources — sentinel label entries for the bh_vjoy_*_label keys.
 #
-# These ride on the shared Lxd3;->l1 resolver short-circuit (installed by
+# These ride on the shared StringResourcesKt.stringResource short-circuit (installed by
 # apply_menu_patches.py); the resolver returns the label by key without
 # needing a CVR entry, so this is belt-and-braces (a missing CVR entry can
 # still trigger an Lhc6 lookup attempt elsewhere). The bytecode side that
@@ -546,6 +574,9 @@ def patch_manifest(manifest_path: Path) -> None:
 # relabels override the host's own keys in maybeResolveCustomLabel.
 # ---------------------------------------------------------------------------
 
+# The features.winemu bundle is gone from 6.1.1's base APK (it moved into the
+# downloaded PC-engine plugin); missing dirs are skipped, and it is kept listed
+# only so an older base still gets its entries.
 CVR_DIRS = (
     "assets/composeResources/com.xiaoji.egggame.features.vjoy",
     "assets/composeResources/com.xiaoji.egggame.common.vjoy",
@@ -604,43 +635,101 @@ def patch_cvr_locales(root: Path) -> None:
 # accounting perfectly balanced (identical to a legitimate skip). The title,
 # name field, and Cancel/Confirm buttons are sibling composables, untouched.
 #
-# Fragile by nature (Compose layout, R8 letters): Ldl7; and the registers are
-# 6.0.9-specific and will shift on a base bump — fails loudly if the anchor
-# moves. The unique `if-eqz v1, :cond_6` + the `xor-int/lit8 v18, v11, 0x1`
-# trailer pin it unambiguously within dl7.smali.
+# 6.1.1 re-anchoring: the class letter moved (Ldl7; -> Lfk;) and so did every
+# register/label, so the 6.0.9 literal-text anchor is gone. But Compose's
+# runtime is no longer obfuscated, which lets us anchor STRUCTURALLY instead of
+# on letters: locate the file by the two test tags, find the skip check
+# (Composer;->shouldExecute(ZI)Z, 6.0.9 Ljy8;->Y(IZ)Z) that guards the branch
+# rendering the row, and verify its skip target really does call
+# Composer;->skipToGroupEnd() (6.0.9 Ljy8;->b0()) before touching anything.
+# Registers and labels are read out of the match rather than hardcoded.
 # ---------------------------------------------------------------------------
 
+# Quoted forms matter: "vjoy_share_upload" is a substring of
+# "vjoy_share_upload_check", so an unquoted search would match every file
+# carrying only the latter and the uniqueness assertion below would trip.
+UPLOAD_TAG = '"vjoy_share_upload"'
+UPLOAD_CHECK_TAG = '"vjoy_share_upload_check"'
+SHOULD_EXECUTE_RE = re.compile(
+    r"    invoke-interface \{[^}]*\}, Landroidx/compose/runtime/Composer;->"
+    r"shouldExecute\(ZI\)Z\n"
+    r"(?:\s*\.line \d+\n|\n)*"
+    r"    move-result (v\d+)\n"
+    r"(?:\s*\.line \d+\n|\n)*"
+    r"    if-eqz \1, (:\w+)\n"
+)
+
+
+def _find_upload_row_file(root: Path):
+    """The unique smali file carrying BOTH share-dialog upload test tags."""
+    hits = []
+    for f in smali_files(root):
+        data = f.read_bytes()
+        if UPLOAD_TAG.encode() in data and UPLOAD_CHECK_TAG.encode() in data:
+            hits.append(f)
+    if not hits:
+        die(f"Upload-original hide: no smali file contains both {UPLOAD_TAG!r} "
+            f"and {UPLOAD_CHECK_TAG!r}")
+    if len(hits) > 1:
+        # The dialog's sub-section lambda is the one that RENDERS the row, i.e.
+        # the one whose tag is passed to a Composable; keep this strict rather
+        # than guessing.
+        locs = "\n  ".join(h.name for h in hits)
+        die("Upload-original hide: expected exactly 1 file with both upload "
+            f"test tags but found {len(hits)}:\n  {locs}")
+    return hits[0]
+
+
 def patch_hide_upload_original(root: Path) -> None:
-    p = root / "smali_classes4" / "dl7.smali"
-    if not p.is_file():
-        die("smali_classes4/dl7.smali not found (Upload-original row hide)")
+    p = _find_upload_row_file(root)
     src = read(p)
-    old = (
-        "    move-result v1\n"
-        "\n"
-        "    if-eqz v1, :cond_6\n"
-        "\n"
-        "    xor-int/lit8 v18, v11, 0x1\n"
-    )
-    new = (
-        "    move-result v1\n"
-        "\n"
+
+    if "# BH VJoy export: hide the stock" in src:
+        print("OK: Upload-original row already hidden")
+        return
+
+    tag_pos = src.find(UPLOAD_TAG)
+    if tag_pos < 0:
+        die(f"Upload-original hide: {UPLOAD_TAG!r} vanished from {p.name}")
+
+    # The guarding skip check is the LAST shouldExecute before the tag.
+    candidates = [m for m in SHOULD_EXECUTE_RE.finditer(src) if m.end() <= tag_pos]
+    if not candidates:
+        die(f"Upload-original hide: no Composer.shouldExecute(ZI)Z + move-result "
+            f"+ if-eqz sequence precedes {UPLOAD_TAG!r} in {p.name}")
+    m = candidates[-1]
+    reg, label = m.group(1), m.group(2)
+
+    # Safety: the branch we are forcing must be Compose's own skip path.
+    # Confirm the target label block calls skipToGroupEnd() nearby, otherwise we
+    # would be redirecting control flow somewhere that unbalances the group/slot
+    # accounting and corrupts the whole composition.
+    label_decl = f"\n    {label}\n"
+    lpos = src.find(label_decl, m.end())
+    if lpos < 0:
+        die(f"Upload-original hide: skip target {label} not found after the "
+            f"shouldExecute check in {p.name}")
+    window = src[lpos:lpos + 600]
+    if "Landroidx/compose/runtime/Composer;->skipToGroupEnd()V" not in window:
+        die(f"Upload-original hide: {label} in {p.name} does not lead to "
+            "Composer.skipToGroupEnd() — refusing to redirect a branch that is "
+            "not Compose's skip path")
+
+    old_if = f"    if-eqz {reg}, {label}\n"
+    if_pos = src.rindex(old_if, m.start(), m.end())
+    new_if = (
         "    # BH VJoy export: hide the stock \"Upload original\" checkbox row in\n"
-        "    # the repurposed \"Name Profile\" dialog. Force this sub-section\n"
-        "    # composable down Compose's own skip-to-group-end path so the row\n"
-        "    # never renders (group-balanced — identical to a legitimate skip).\n"
-        "    goto :cond_6\n"
-        "\n"
-        "    xor-int/lit8 v18, v11, 0x1\n"
+        "    # the repurposed \"Name Profile\" dialog. It is a cloud-only control\n"
+        "    # feeding the publish path interceptShare aborts. Forcing this\n"
+        "    # sub-section composable down Compose's OWN skip-to-group-end path\n"
+        "    # means the row never renders while group/slot accounting stays\n"
+        "    # balanced — indistinguishable from a legitimate skip.\n"
+        f"    goto {label}\n"
     )
-    if old not in src:
-        if new in src or "    goto :cond_6\n\n    xor-int/lit8 v18, v11, 0x1\n" in src:
-            print("OK: Upload-original row already hidden")
-            return
-        die("Upload-original hide anchor not found in dl7.smali (Ljy8;->Y skip "
-            "check / if-eqz v1, :cond_6 / xor-int/lit8 v18, v11, 0x1)")
-    write(p, src.replace(old, new, 1))
-    print("OK: dl7 (share dialog): hide \"Upload original\" checkbox row")
+    src = src[:if_pos] + new_if + src[if_pos + len(old_if):]
+    write(p, src)
+    print(f"OK: {p.name} (share dialog): hide \"Upload original\" checkbox row "
+          f"[skip check {reg} -> {label}]")
 
 
 # ---------------------------------------------------------------------------

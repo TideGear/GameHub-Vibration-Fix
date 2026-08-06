@@ -4,17 +4,17 @@ name: Build APK
 # bannerhub-revanced's privacy patch set. Adds dual-motor low/high
 # dispatch + preload-free SDL rumble keepalive (winebus.so duration
 # patched on disk) and kills Firebase / GMS Measurement / Mob Push /
-# XiaoJi heartbeat+events / JieLi OTA on top of stock GameHub 6.0.9.
+# XiaoJi heartbeat+events / JieLi OTA on top of stock GameHub 6.1.1.
 # Otherwise unchanged from upstream Tencent build.
 #
 # One-time setup: upload the original GameHub APK as an asset on a
-# release tagged `base-apk-6.0.9` in this repo. The workflow
+# release tagged `base-apk-6.1.1` in this repo. The workflow
 # `gh release download`s from there.
 
 on:
   push:
     tags:
-      - 'v*-6.0.9*'
+      - 'v*-6.1.1*'
   workflow_dispatch:
 
 jobs:
@@ -30,16 +30,40 @@ jobs:
       - name: Resolve base version
         id: base
         run: |
-          # Only 6.0.9 is supported. Kept as a step so downstream steps can
+          # Only 6.1.1 is supported. Kept as a step so downstream steps can
           # still reference steps.base.outputs.* without restructuring.
-          echo "version=6.0.9" >> "$GITHUB_OUTPUT"
-          echo "release_tag=base-apk-6.0.9" >> "$GITHUB_OUTPUT"
-          echo "Base version: 6.0.9"
+          echo "version=6.1.1" >> "$GITHUB_OUTPUT"
+          echo "release_tag=base-apk-6.1.1" >> "$GITHUB_OUTPUT"
+          # The PC engine is a separately-downloaded plugin from 6.1.1 on, and
+          # the dual-motor rumble hooks live inside it. Upload the plugin APK
+          # (pulled from a device: files/plugins/com.xiaoji.egggame.plugin.pcengine/
+          # base.apk) as an asset on this tag. Must match the versionCode in
+          # extension/BhPluginShadow.java#EXPECTED_PLUGIN_VERSION_CODE.
+          echo "plugin_tag=pcengine-plugin-101" >> "$GITHUB_OUTPUT"
+          echo "Base version: 6.1.1"
 
       - name: Download original GameHub APK
         run: |
           gh release download "${{ steps.base.outputs.release_tag }}" --pattern "*.apk" -D base/ -R ${{ github.repository }}
           ls base/
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Download PC engine plugin APK
+        id: plugin
+        run: |
+          # Optional: without it the build still produces a working APK, just
+          # without dual-motor dispatch (sustained rumble is unaffected — that is
+          # a winebus patch on the Wine component tree, not the plugin).
+          if gh release download "${{ steps.base.outputs.plugin_tag }}" \
+                --pattern "*.apk" -D plugin/ -R ${{ github.repository }}; then
+            echo "have_plugin=1" >> "$GITHUB_OUTPUT"
+            ls -l plugin/
+          else
+            echo "have_plugin=0" >> "$GITHUB_OUTPUT"
+            echo "::warning::No ${{ steps.base.outputs.plugin_tag }} release asset;"\
+                 "building WITHOUT dual-motor rumble (shadow dex omitted)."
+          fi
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
@@ -78,8 +102,19 @@ jobs:
 
       - name: Apply BhVibration smali patches
         run: |
-          # Per-version anchor set + rename map for 6.0.4 lives at the top
-          # of the script.
+          # On 6.1.1 this applies ONLY the winebus disk-patch trigger, injected
+          # into the base APK's own PcEnginePluginHostActivity.onCreate — which
+          # runs in the ":pcengine" process on every game launch, before the
+          # plugin's Wine activity starts. That restores sustained rumble past
+          # SDL's ~1 s rumble_expiration, because winebus.so did NOT move into
+          # the plugin: it is still a downloaded Wine component under
+          # <filesDir>/usr, which is the tree BhVibrationController already
+          # walks.
+          #
+          # The three dual-motor dispatch hooks (onRumble entry, Physical
+          # dispatch/stop) are NOT applied on 6.1.1 — those classes moved into
+          # the downloaded plugin. See README ("PC engine plugin"). The script
+          # detects the layout itself and reports exactly what it applied.
           python3 scripts/apply_vibration_patches.py apktool_out
 
       - name: Apply privacy patches
@@ -117,9 +152,48 @@ jobs:
           # (vcontroller/shareMap | getMapByShareCode | uploadGtheme) and the
           # upload call-relationship — not R8 letters — so they survive
           # reshuffles. Label relabels + the import-dialog skip ride on the
-          # Lxd3;->l1 resolver short-circuit installed by the menu patches.
+          # StringResourcesKt.stringResource short-circuit installed by the
+          # menu patches.
           # Fails loudly if any anchor is missing or non-unique.
           python3 scripts/apply_export_controls_patches.py apktool_out
+
+      - name: Apply background update-check patch
+        run: |
+          # Starts com.xj.winemu.update.BhSteamUpdateChecker from the
+          # Application's onCreate so the per-game "Online Update" red dot
+          # stays fresh for every installed Steam game without the user
+          # having to launch the game first. Stock GameHub only runs the
+          # Steam update check on lazy launch/detail paths, so the badge
+          # lags reality; this background worker periodically (and on app
+          # foreground) re-runs the host's own per-app check for each
+          # installed appId (enumerated from <filesDir>/Steam/steamapps/
+          # appmanifest_*.acf) via the same withContext dispatch the host's
+          # own bulk sweep uses, which refreshes the badge flow. The only
+          # smali edit is a single start() call injected into onCreate;
+          # everything else is in the extension class. Fails loudly if the
+          # onCreate anchor is missing or non-unique.
+          python3 scripts/apply_update_check_patches.py apktool_out
+
+      - name: Build PC engine plugin shadow dex (dual-motor rumble)
+        if: steps.plugin.outputs.have_plugin == '1'
+        run: |
+          set -e
+          # Patch the PLUGIN's rumble classes and assemble ONLY those classes
+          # into a ~7 KB dex. At runtime BhPluginShadow prepends it to the
+          # plugin's DexClassLoader dexPath so our copies win, while the plugin's
+          # base.apk is never modified — its SHA-256 identity record therefore
+          # stays valid and no forging is needed. See the README section
+          # "PC engine plugin".
+          PLUGIN_APK=$(ls plugin/*.apk | head -1)
+          java -jar $HOME/bin/apktool.jar d "$PLUGIN_APK" -o plugin_out -f
+          python3 scripts/apply_plugin_rumble_patches.py plugin_out
+          mkdir -p apktool_out/assets
+          python3 scripts/build_plugin_shadow_dex.py \
+              plugin_out apktool_out/assets/bh_pcengine_shadow.dex \
+              $HOME/bin/apktool.jar
+          # Base-APK side: route the plugin's dexPath through BhPluginShadow.
+          python3 scripts/apply_plugin_shadow_patches.py apktool_out
+          ls -l apktool_out/assets/bh_pcengine_shadow.dex
 
       - name: Rebuild and sign
         run: |
@@ -130,8 +204,8 @@ jobs:
 
           # Compile vibration extension Java + d8 to classes<N>.dex, where
           # <N> is the next free dex slot after the rebuilt APK's stock dex
-          # files, computed dynamically below. (6.0.9 has 5 stock dex files
-          # → classes6; 6.0.4 had 6 → classes7.)
+          # files, computed dynamically below. (6.1.1 has 4 stock dex files
+          # → classes5; 6.0.9 had 5 → classes6.)
           ANDROID_JAR=$(ls $ANDROID_SDK_ROOT/platforms/android-*/android.jar 2>/dev/null | sort -V | tail -1)
           mkdir -p ext_classes
           javac -source 8 -target 8 -cp "$ANDROID_JAR" -d ext_classes \
@@ -142,11 +216,12 @@ jobs:
               extension/BhSafProxyActivity.java \
               extension/BhVjoyShareHook.java \
               extension/BhVjoyImporter.java \
-              extension/BhVjoyJson.java
+              extension/BhVjoyJson.java \
+              extension/BhSteamUpdateChecker.java
           BUILD_TOOLS=$(ls $ANDROID_SDK_ROOT/build-tools | sort -V | tail -1)
           mkdir -p ext_dex
           $ANDROID_SDK_ROOT/build-tools/$BUILD_TOOLS/d8 \
-              --release --min-api 26 --output ext_dex \
+              --release --min-api 29 --output ext_dex \
               $(find ext_classes -name "*.class")
           MAX_DEX=$(unzip -l rebuilt-unsigned.apk | awk '
               match($0, /classes([0-9]*)\.dex$/, m) {
