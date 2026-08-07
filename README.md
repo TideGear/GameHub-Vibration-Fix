@@ -516,6 +516,43 @@ scripts/
 .github/workflows/build.yml        CI build pipeline.
 ```
 
+## Known stock bugs (not ours)
+
+### Second Wine session in a reused `:pcengine` process aborts (6.1.1)
+
+Symptom: after playing a game and exiting, the *next* "Play Now" closes
+instantly; the one after that works. It alternates, and it looks exactly like a
+GameScrub regression.
+
+It isn't. The `:pcengine` process survives a session teardown, and setting up a
+second Wine session inside that same process double-frees on the render thread:
+
+    AdrenoVK-0: Shader compilation failed for shaderType: 4
+    AdrenoVK-0: Pipeline create failed
+    scudo: ERROR: invalid chunk state when deallocating address 0x2000075e5ccd6b0
+    libc:  Fatal signal 6 (SIGABRT) in tid NNNNN (RenderThread), pid NNNNN (:pcengine)
+
+Android then respawns `:pcengine`, so the following launch gets a fresh process
+and succeeds — hence the alternation. Watch the `:pcengine` pid across launches
+to see it: one pid serves exactly one session.
+
+Confirmed stock by A/B on 2026-08-06: built with
+`EXPECTED_PLUGIN_VERSION_CODE` forced to 999 so BhPluginShadow's gate refuses and
+the plugin loads completely unpatched (log shows the "only supports v999" degrade
+and no "dual-motor ACTIVE"). The identical crash still reproduced. Scudo is the
+platform allocator and the fault is in the Adreno Vulkan path — nothing any of
+the four shadow classes (gamepad dispatch, telemetry) can reach.
+
+Do not chase this in GameScrub. If it ever needs masking, the only lever from the
+base APK is recycling `:pcengine` at session end so every launch gets a fresh
+process — but that has to happen *after* Steam's exit-time cloud upload
+("steam cloud exit upload intent sent"), or it costs cloud saves.
+
+Diagnostic note: `PcEnginePluginHostActivity` logs nothing here. Its
+`finish because PC engine plugin runtime is unavailable: reason=…` path is a
+*different* failure (plugin runtime genuinely missing) and is absent in this one —
+the activity dies with its process instead.
+
 ## What this is not
 
 - Not a continuation of BannerHub. The Amazon / Epic / GOG / Component
