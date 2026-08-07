@@ -145,7 +145,9 @@ install path is deterministic rather than a UUID.
   injects `BhVibrationController.ensureWinebusDurationPatchOnce(this)` into
   `PcEnginePluginHostActivity.onCreate` — base-APK host code that runs in the
   `:pcengine` process on every launch, before Wine starts. The Java patcher walks
-  `getFilesDir()` recursively and so finds the Wine tree unchanged.
+  `getFilesDir()` recursively and so finds the Wine tree unchanged. That site is
+  the main thread, unlike 6.0.9's env-builder site, so the walk is handed to a
+  worker; see [Preload-free architecture](#preload-free-architecture) below.
 - *Dual-motor dispatch* — **still blocked.** Its hooks target
   `GamepadServerManager` and the Physical vibrator class, which are inside the
   plugin dex. That dex is versioned independently of the base APK and is not
@@ -179,10 +181,19 @@ That degradation is deliberately **not silent** — it is reported three ways:
 2. a **warning banner** at the top of the PC Vibration Settings dialog;
 3. a `BhPluginShadow` **logcat** line.
 
-Because the plugin loads in the `:pcengine` process while the settings dialog
-runs in the main UI process, the status is mirrored through a SharedPreferences
-file (same cross-process trick `BhMenuGameId` uses); the mirror is cleared as
-soon as a load succeeds, so the banner disappears once dual-motor is working.
+Because the plugin loads in the `:pcengine` process while the settings dialog runs
+in the main UI process, the status is mirrored through storage — as a **plain
+file**, deliberately not SharedPreferences. Each process keeps its own
+`SharedPreferencesImpl` per file, populated once and never refreshed from disk, so
+a write in `:pcengine` is invisible to a main process that has already read it
+(`MODE_MULTI_PROCESS` was the opt-in for re-reading and was deprecated in API 23
+for being unreliable). This was a real shipped bug: the banner kept warning that
+dual-motor was off for sessions after it had started working, because the
+clear-on-success never crossed the process boundary. `BhMenuGameId` still uses
+SharedPreferences and is fine — its captured game id is write-once and never has
+to return to "cleared", which is exactly the case prefs can't carry. The file
+mirror is cleared (deleted, not truncated) as soon as a load succeeds, so the
+banner disappears once dual-motor is working.
 
 **Sustained rumble is immune to plugin updates** — it patches the Wine component
 tree, not the plugin, and its trigger doesn't touch plugin internals. Only
@@ -217,6 +228,16 @@ time-throttle, which is the entire cause of the lag.
 
 `BhSteamUpdateChecker` closes the gap without reimplementing anything:
 
+- **Main process only.** Its smali entry is `AndroidApp.onCreate()`, which runs in
+  *every* process, so it also started in `:pcengine` — where it can never succeed,
+  because that process's Koin graph has no binding for the repository it reflects
+  into. Every sweep there threw `No definition found for type '<repo>' on scope
+  '['_root_']'`, once per installed Steam game, on `:pcengine`'s main thread during
+  the game-launch window. Caught and logged, so only ever noise, but pointless
+  noise at the worst moment. It now gates on a process name with no `":suffix"`,
+  erring toward starting when the name is unknown: failing to start in the main
+  process would silently drop the badges, whereas a spurious start somewhere new
+  is just the noise this removes.
 - **Enumeration is a version-independent filesystem scan** of
   `<filesDir>/Steam/steamapps/appmanifest_<appId>.acf` — a manifest's presence
   is the host's own definition of "installed", so this is precisely the set
@@ -257,10 +278,22 @@ The current build avoids that entire failure mode by patching `winebus.so`
 on disk and adding nothing to `LD_PRELOAD`. The smali envbuilder patch
 ([scripts/apply_vibration_patches.py](scripts/apply_vibration_patches.py))
 calls [BhVibrationController.ensureWinebusDurationPatchOnce()](extension/BhVibrationController.java)
-once per app process, immediately before the env builder hands off to the
-Wine launcher. The Java side scans the files tree for every `winebus.so`
-and rewrites the duration loads in place; an `AtomicBoolean` gates against
-repeat scans.
+once per app process, before Wine starts. The Java side scans the files tree for
+every `winebus.so` and rewrites the duration loads in place; an `AtomicBoolean`
+gates against repeat scans, and releases itself when no `winebus.so` was found so
+a scan that ran before the Wine tree existed can be retried.
+
+The call site moved in 6.1.1 and that changed its threading. On 6.0.9 the only
+caller was the Wine env builder, already on a background thread, so the scan ran
+inline. 6.1.1 moved that builder into the plugin, leaving
+`PcEnginePluginHostActivity.onCreate` as the base-APK site — the **main thread**.
+A recursive walk of ~16 k files does not belong there, so the trigger now runs
+inline only when already off the main thread (preserving the strong
+"patched before Wine starts" ordering for any background caller) and hands off to a
+worker otherwise. The async path still has plugin load plus engine boot ahead of
+any `dlopen` of `winebus.so`, and losing that race would only cost sustained rumble
+for a single session, since the on-disk patch persists and applies from the next
+launch on.
 
 Both aarch64-unix and x86_64-unix `winebus.so` variants are patched. The
 aarch64 path rewrites `ldur w3,[x29,#-0x14]; blr x8` to `mov w3,#-1; blr x8`.
@@ -463,10 +496,15 @@ extension/
                                    resolver short-circuit + click handler
                                    that launches BhVibrationSettingsActivity
                                    scoped to BhMenuGameId.getCaptured().
+  BhPluginShadow.java              prepends our shadow dex to the PC-engine
+                                   plugin's PluginClassLoader dexPath;
+                                   versionCode gate + asset extraction +
+                                   Toast/banner/file-mirror on degrade.
   BhVibrationController.java       singleton dispatcher (smali entry points,
                                    per-game settings, keepalive thread,
                                    in-process winebus.so disk patcher).
-  BhVibrationSettingsActivity.java Mode/Intensity dialog UI.
+  BhVibrationSettingsActivity.java Mode/Intensity dialog UI; shows the
+                                   dual-motor degrade banner.
   BhVjoyShareHook.java             smali entry points for the VJoy share/
                                    apply/upload hijack: interceptShare
                                    (throws), interceptUpload (pre-CDN byte
@@ -484,7 +522,8 @@ extension/
                                    polymorphic VJoyLayoutJson for layout
                                    JSON <-> object conversion.
   BhSteamUpdateChecker.java        background worker (started from
-                                   AndroidApp.onCreate) that enumerates
+                                   AndroidApp.onCreate, main process only)
+                                   that enumerates
                                    installed Steam appIds from
                                    steamapps/appmanifest_*.acf and re-runs
                                    the host's own per-app update check
@@ -494,8 +533,11 @@ extension/
 
 scripts/
   apply_vibration_patches.py       smali hooks against a decompiled
-                                   GameHub apktool tree. NOT APPLICABLE to
-                                   6.1.1 (engine moved to the plugin).
+                                   GameHub apktool tree. On 6.1.1 (detected
+                                   by PcEnginePluginHostActivity.smali) it
+                                   applies ONLY the winebus trigger — the
+                                   dual-motor hooks moved into the plugin
+                                   and are applied by the scripts below.
   apply_privacy_patches.py         manifest + smali + native-lib edits
                                    that kill Firebase / GMS Measurement
                                    / Mob Push / XiaoJi events + heartbeat
@@ -512,6 +554,22 @@ scripts/
                                    background update-badge checker.
   patch_winebus_rumble_duration.py offline preload-free patch for
                                    extracted winebus.so (aarch64 + x86_64).
+
+  — PC engine plugin (6.1.1+), see "PC engine plugin" above —
+  apply_plugin_rumble_patches.py   dual-motor hooks inside a decompiled
+                                   plugin tree: GamepadServerManager
+                                   onRumble/g(II)V/f()V + Lxjp/fi3;.
+  apply_plugin_privacy_patches.py  kills the plugin-side telemetry the
+                                   base-APK patches can't reach: perf
+                                   summary upload (Lxjp/mv1;) and the
+                                   heartbeat funnel (Lxjp/jg4;->e).
+  build_plugin_shadow_dex.py       assembles ONLY the patched plugin
+                                   classes into a standalone shadow dex
+                                   (refuses to build without the "# BH"
+                                   marker, i.e. a no-op shadow).
+  apply_plugin_shadow_patches.py   the single base-APK injection that
+                                   routes PluginClassLoader's dexPath
+                                   through BhPluginShadow.dexPath().
 
 .github/workflows/build.yml        CI build pipeline.
 ```
