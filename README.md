@@ -536,12 +536,30 @@ Android then respawns `:pcengine`, so the following launch gets a fresh process
 and succeeds — hence the alternation. Watch the `:pcengine` pid across launches
 to see it: one pid serves exactly one session.
 
-Confirmed stock by A/B on 2026-08-06: built with
-`EXPECTED_PLUGIN_VERSION_CODE` forced to 999 so BhPluginShadow's gate refuses and
-the plugin loads completely unpatched (log shows the "only supports v999" degrade
-and no "dual-motor ACTIVE"). The identical crash still reproduced. Scudo is the
-platform allocator and the fault is in the Adreno Vulkan path — nothing any of
-the four shadow classes (gamepad dispatch, telemetry) can reach.
+Confirmed stock by two A/Bs on 2026-08-06, both reproducing the identical crash:
+
+1. **Shadow disabled.** `EXPECTED_PLUGIN_VERSION_CODE` forced to 999 so
+   BhPluginShadow's gate refuses and the plugin loads completely unpatched (log
+   shows the "only supports v999" degrade and no "dual-motor ACTIVE"). This
+   clears all four shadow classes — dual-motor hooks *and* plugin telemetry
+   kills — since they all ride in the shadow dex.
+2. **Pure stock.** The untouched stock APK with only its signature replaced by
+   the repo testkey, so it installs in place over GameScrub with no data loss and
+   contains zero GameScrub code (4 dex, no `classes5.dex`, no `bh_` assets; zero
+   `Bh*` log lines during the run). This clears every base-APK patch at once —
+   privacy stubs, menus, export controls, update check, winebus trigger.
+   See `scratchpad/strip_sig.py` pattern: drop `META-INF/*.{RSA,SF,MF}`, zipalign,
+   `apksigner sign` with testkey. Stock 6.1.1 is v2/v3-signed, so there are no
+   signature *entries* to drop and the payload stays byte-identical.
+
+Scudo is the platform allocator and the fault is in the Adreno Vulkan path,
+unreachable from any of our Java/smali patches.
+
+Not covered by either A/B: the winebus.so duration patch, which lives in app data
+rather than the APK and therefore persists under stock too. It is a Wine input
+driver in the Wine process tree, not Android's render thread, and the crash fires
+during setup before the game runs — but it is the one item still argued rather
+than tested. Closing it would need a debuggable build to restore the stock bytes.
 
 Do not chase this in GameScrub. If it ever needs masking, the only lever from the
 base APK is recycling `:pcengine` at session end so every launch gets a fresh

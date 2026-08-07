@@ -179,6 +179,16 @@ public final class BhSteamUpdateChecker {
     // ─────────────────────────────────────────────────────────────────────
     public static void start(Context ctx) {
         try {
+            // AndroidApp.onCreate() runs in EVERY process, so this used to start
+            // in ":pcengine" too, where the check can never succeed: the Koin
+            // graph there has no binding for the repository we reflect into, and
+            // every sweep threw
+            //   No definition found for type '<repo>' on scope '['_root_']'
+            // once per installed Steam game. Caught and logged, so it was only
+            // ever noise -- but it was noise on ":pcengine"'s main thread during
+            // the game-launch window, doing reflection and Koin lookups that
+            // could not possibly produce a result. Main process only.
+            if (!isMainProcess(ctx)) return;
             if (!STARTED.compareAndSet(false, true)) return;
             BhSteamUpdateChecker self = new BhSteamUpdateChecker(ctx);
             INSTANCE = self;
@@ -187,6 +197,29 @@ public final class BhSteamUpdateChecker {
             Log.i(TAG, "started");
         } catch (Throwable t) {
             Log.w(TAG, "start failed", t);
+        }
+    }
+
+    /**
+     * True when we are in the app's main process, i.e. the process name has no
+     * ":suffix". GameHub's other processes (":pcengine", and whatever else it
+     * adds later) don't carry the DI graph this checker needs.
+     *
+     * Errs toward TRUE on an unknown process name: failing to start in the main
+     * process would silently drop the update badges, whereas an extra start in
+     * some future process is only the harmless noise this gate removes.
+     */
+    private static boolean isMainProcess(Context ctx) {
+        try {
+            String proc = Application.getProcessName();
+            if (proc == null || proc.isEmpty()) return true;
+            if (proc.indexOf(':') >= 0) {
+                Log.i(TAG, "not starting in process " + proc);
+                return false;
+            }
+            return true;
+        } catch (Throwable t) {
+            return true;
         }
     }
 
