@@ -7,6 +7,7 @@ import android.os.Build;
 import android.os.CombinedVibration;
 import android.os.Handler;
 import android.os.HandlerThread;
+import android.os.Looper;
 import android.os.SystemClock;
 import android.os.VibrationAttributes;
 import android.os.VibrationEffect;
@@ -493,10 +494,58 @@ public final class BhVibrationController {
     // independent of this and work whether the disk patch lands or not.
     // ─────────────────────────────────────────────────────────────────────────
     public static void ensureWinebusDurationPatchOnce(Context ctx) {
+        if (ctx == null) return;
+        // On 6.0.9 the only caller was the Wine env builder, already on a
+        // background thread, so this ran inline. 6.1.1 moved that builder into
+        // the PC-engine plugin, and the surviving base-APK call site is
+        // PcEnginePluginHostActivity.onCreate — the MAIN thread. A recursive walk
+        // of ~16k files must not run there: besides the obvious jank, it delays
+        // the activity reaching its resumed state, and the host's plugin-load
+        // callback only calls recreate() when that state is already set. Lose
+        // that race and the callback takes its no-recreate path, leaving a dead
+        // activity — the user taps Play Now, nothing happens, and only a second
+        // tap works (by then the plugin is resident and onCreate takes the fast
+        // path).
+        //
+        // So: inline when we are already off the main thread (preserving the
+        // strong "patched before Wine starts" ordering for any background
+        // caller), otherwise hand it to a worker. The async path still has
+        // plugin load + engine boot + Steam init — seconds — before anything
+        // dlopen's winebus.so, and if it ever did lose that race the only cost
+        // is that sustained rumble reverts to SDL's ~1 s cutoff for one session;
+        // the on-disk patch persists and applies from the next launch on.
+        if (Looper.myLooper() != Looper.getMainLooper()) {
+            try {
+                ensureWinebusDurationPatch(ctx);
+            } catch (Throwable t) {
+                Log.w(TAG, "ensureWinebusDurationPatchOnce failed", t);
+            }
+            return;
+        }
+        final Context app = ctx.getApplicationContext() != null
+                ? ctx.getApplicationContext() : ctx;
         try {
-            if (ctx != null) ensureWinebusDurationPatch(ctx);
+            Thread worker = new Thread(new Runnable() {
+                @Override public void run() {
+                    try {
+                        ensureWinebusDurationPatch(app);
+                    } catch (Throwable t) {
+                        Log.w(TAG, "ensureWinebusDurationPatchOnce failed", t);
+                    }
+                }
+            }, "bh-winebus-patch");
+            worker.setPriority(Thread.NORM_PRIORITY + 1);
+            worker.setDaemon(true);
+            worker.start();
         } catch (Throwable t) {
-            Log.w(TAG, "ensureWinebusDurationPatchOnce failed", t);
+            // Could not spawn a thread — fall back to inline rather than
+            // skipping the patch outright.
+            Log.w(TAG, "could not spawn winebus patch worker; running inline", t);
+            try {
+                ensureWinebusDurationPatch(app);
+            } catch (Throwable t2) {
+                Log.w(TAG, "ensureWinebusDurationPatchOnce failed", t2);
+            }
         }
     }
 

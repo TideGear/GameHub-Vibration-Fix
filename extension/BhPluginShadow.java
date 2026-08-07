@@ -97,16 +97,28 @@ public final class BhPluginShadow {
     private BhPluginShadow() { }
 
     /**
-     * SharedPreferences mirror of {@link #sStatus}.
+     * Cross-process mirror of {@link #sStatus}, as a plain file.
      *
      * The plugin — and therefore this class's decision — loads in the
      * ":pcengine" process, while the settings dialog that displays the warning
      * runs in the main UI process. Statics don't cross that boundary, so the
-     * status is mirrored to a (cross-process readable) prefs file, exactly as
-     * BhMenuGameId does for the captured game id.
+     * status has to be mirrored through storage.
+     *
+     * This deliberately does NOT use SharedPreferences. Each process keeps its
+     * own in-memory SharedPreferencesImpl per file, populated once and never
+     * refreshed from disk, so a write in ":pcengine" is invisible to a main
+     * process that has already read the file. (MODE_MULTI_PROCESS was the opt-in
+     * for re-reading and was deprecated in API 23 for being unreliable.) That
+     * asymmetry is survivable for a write-once value like BhMenuGameId's
+     * captured id, but not here: this status must be able to go back to
+     * "clear" — otherwise the settings banner latches on and keeps warning that
+     * dual-motor is off long after it started working.
+     *
+     * A file re-read on every access has no such cache, and this is read once
+     * when a settings screen opens and written once per plugin load, so the cost
+     * is irrelevant.
      */
-    private static final String STATUS_PREFS = "bh_plugin_shadow_status";
-    private static final String KEY_STATUS = "status";
+    private static final String STATUS_FILE = "bh_plugin_shadow_status.txt";
 
     /**
      * Human-readable reason dual-motor rumble is off, or null if it is active.
@@ -122,26 +134,59 @@ public final class BhPluginShadow {
      * mirror, so the main/UI process can report a decision made in ":pcengine".
      */
     public static String getStatusMessage(Context ctx) {
-        String local = sStatus;
-        if (local != null) return local;
+        // The mirror is authoritative, not the static: this process may be the
+        // main one, whose sStatus is always null because the decision is made in
+        // ":pcengine". Checking sStatus first would be harmless, but reading the
+        // file unconditionally keeps one code path for both processes.
+        String s = readMirror(ctx);
+        if (s != null) return s;
+        return sStatus;
+    }
+
+    private static String readMirror(Context ctx) {
         try {
             if (ctx == null) return null;
-            String s = ctx.getSharedPreferences(STATUS_PREFS, Context.MODE_PRIVATE)
-                    .getString(KEY_STATUS, null);
-            return (s == null || s.isEmpty()) ? null : s;
+            File f = new File(ctx.getFilesDir(), STATUS_FILE);
+            if (!f.isFile() || f.length() == 0L) return null;
+            byte[] buf = new byte[(int) Math.min(f.length(), 4096L)];
+            int n;
+            try (InputStream in = new java.io.FileInputStream(f)) {
+                n = in.read(buf);
+            }
+            if (n <= 0) return null;
+            String s = new String(buf, 0, n, "UTF-8").trim();
+            return s.isEmpty() ? null : s;
         } catch (Throwable t) {
             return null;
         }
     }
 
-    /** Persist (or clear) the mirror. Best-effort. */
-    @SuppressWarnings("deprecation")
+    /**
+     * Persist (or clear) the mirror. Best-effort.
+     *
+     * Clearing deletes the file rather than truncating it, so a reader can never
+     * observe a half-written record as a live warning.
+     */
     private static void mirrorStatus(Context ctx, String message) {
         try {
             if (ctx == null) return;
-            ctx.getSharedPreferences(STATUS_PREFS, Context.MODE_PRIVATE)
-                    .edit().putString(KEY_STATUS, message == null ? "" : message)
-                    .commit();
+            File f = new File(ctx.getFilesDir(), STATUS_FILE);
+            if (message == null || message.isEmpty()) {
+                if (f.isFile() && !f.delete()) {
+                    Log.w(TAG, "could not clear " + f);
+                }
+                return;
+            }
+            File tmp = new File(f.getPath() + ".tmp");
+            try (OutputStream os = new FileOutputStream(tmp)) {
+                os.write(message.getBytes("UTF-8"));
+                os.flush();
+                ((FileOutputStream) os).getFD().sync();
+            }
+            if (!tmp.renameTo(f)) {
+                tmp.delete();
+                Log.w(TAG, "could not move shadow status into place");
+            }
         } catch (Throwable t) {
             Log.w(TAG, "could not mirror shadow status", t);
         }
@@ -226,6 +271,10 @@ public final class BhPluginShadow {
     private static void degrade(Context ctx, String message) {
         sStatus = message;
         if (LOGGED_SKIP.compareAndSet(false, true)) Log.w(TAG, message);
+        // Callers that failed before they had a Context still deserve a banner;
+        // retry the lookup here rather than dropping the mirror write, which
+        // would leave a previous run's stale message on disk.
+        if (ctx == null) ctx = currentApplication();
         if (ctx != null) {
             mirrorStatus(ctx, message);
             warnUser(ctx, message);
