@@ -10,23 +10,31 @@ It is built on GameHub v6.x and heavily uses the work of
 [@The412Banner](https://github.com/The412Banner) as well as others. It
 also includes my own PC-accurate controller vibration fixes.
 
-> ### ⚠️ 6.1.1 status: sustained rumble YES, dual-motor NO
+> ### ⚠️ 6.1.1 moved the PC engine into a plugin — both rumble halves work, dual-motor is version-pinned
 >
 > GameHub **6.1.1 moved the PC/Wine engine out of the APK** into a
-> separately-downloaded plugin, which splits the vibration work in two:
+> separately-downloaded plugin. That split the vibration work in two, and both
+> halves are working (verified on-device):
 >
-> - **Sustained rumble past 1 s still works.** `winebus.so` did *not* move into
->   the plugin — it is still a downloaded Wine component under `<filesDir>/usr`
->   (verified on-device). Only the trigger moved, and the new one is a base-APK
->   hook, so this is fully restored.
-> - **Dual-motor low/high dispatch is offline.** Its hooks target
->   `GamepadServerManager` and the Physical vibrator class, which now live in
->   the plugin dex. The per-game "PC Vibration Settings" row still appears but
->   its Mode/Intensity settings are not consumed yet, so it is a UI stub.
+> - **Sustained rumble past 1 s** — `winebus.so` did *not* move into the plugin;
+>   it is still a downloaded Wine component under `<filesDir>/usr`. Only the
+>   trigger moved, and the new one is a base-APK hook. Immune to plugin updates.
+> - **Dual-motor low/high dispatch** — its hooks target `GamepadServerManager`
+>   and the Physical vibrator class, which now live in the plugin dex. Rather
+>   than patch that dex (and forge the SHA-256 identity record the host
+>   re-verifies on every load), GameScrub **prepends its own small dex** to the
+>   plugin's `DexClassLoader` path, so our copies of those classes win while the
+>   plugin's `base.apk` stays byte-identical.
+>
+> The one caveat: because our shadow classes are copies of a **specific** plugin
+> build, dual-motor is pinned to plugin `versionCode`
+> **101** (`EXPECTED_PLUGIN_VERSION_CODE`). If the plugin updates, dual-motor
+> switches itself off — loudly, via Toast, a settings banner, and logcat — while
+> sustained rumble and the engine keep working. Degraded, never broken.
 >
 > See [PC engine plugin](#pc-engine-plugin-611) for the mechanism.
-> Everything else works on 6.1.1: privacy, local layout export (import needs one
-> more re-anchoring pass), and the "Online Update" badge fix.
+> Everything else works on 6.1.1 too: privacy, layout export *and* import, and
+> the "Online Update" badge fix.
 
 What you get over stock GameHub:
 
@@ -148,12 +156,21 @@ install path is deterministic rather than a UUID.
   `getFilesDir()` recursively and so finds the Wine tree unchanged. That site is
   the main thread, unlike 6.0.9's env-builder site, so the walk is handed to a
   worker; see [Preload-free architecture](#preload-free-architecture) below.
-- *Dual-motor dispatch* — **still blocked.** Its hooks target
+- *Dual-motor dispatch* — **done, via classloader shadowing.** Its hooks target
   `GamepadServerManager` and the Physical vibrator class, which are inside the
-  plugin dex. That dex is versioned independently of the base APK and is not
-  available at build time, so restoring dual-motor needs runtime dex rewriting
-  with instruction-sequence anchoring that re-derives on every plugin update,
-  plus re-committing the identity record described above.
+  plugin dex — versioned independently of the base APK and hashed into the
+  identity record above. The way in is that ComboLite's `PluginClassLoader`
+  extends `DexClassLoader`, whose `dexPath` is a `:`-separated **list searched in
+  order**. A single base-APK injection at the head of its constructor
+  ([apply_plugin_shadow_patches.py](scripts/apply_plugin_shadow_patches.py))
+  routes that argument through
+  [BhPluginShadow.dexPath()](extension/BhPluginShadow.java), which returns
+  `<our shadow dex>:<the untouched plugin base.apk>`. Our copies of those classes
+  win on lookup, the plugin's `base.apk` is never written, and its SHA-256 record
+  keeps verifying. The shadow holds **only** the patched classes (~17 KB —
+  everything they reference resolves from the plugin APK that follows us on the
+  path), because shadowing more than necessary is how you get subtle identity and
+  `instanceof` mismatches.
 
 Patched plugin code *can* call back into the GameScrub extension classes:
 `PluginClassLoader.loadClass` falls back to `super.loadClass` (parent-first) on a
@@ -354,8 +371,7 @@ catches it, deletes its temp file, and treats the publish as failed, so there
 is no cloud upload, no "Cloud Backup Code" dialog, and no navigation to the
 cloud-share tab.
 
-**Import.** *(6.1.1: needs one more re-anchoring pass — see the note at the end
-of this section. Export is unaffected.)* The "Import Layout" share-code dialog
+**Import.** The "Import Layout" share-code dialog
 is skipped entirely. The
 shared `StringResourcesKt.stringResource` resolver short-circuit (the same one that carries the menu
 labels) detects the dialog's title resource key at composition time and calls
@@ -371,17 +387,41 @@ Layouts. The `/vcontroller/getMapByShareCode` method is also hooked
 (`interceptApply`) as a defensive fallback in case the dialog title key is ever
 renamed.
 
-**Import status on 6.1.1.** The four bytecode hooks re-discovered themselves
-unchanged (they are anchored on the `vcontroller/*` URL fragments, not R8
-letters — the share repo has drifted `Lrqn;`→`Lkkm;`→`Lqkm;`→`Laun;`→`Lpat;`
-across bases and the locator has never needed editing). What 6.1.1 did break is
-the *import* half of [BhVjoyImporter](extension/BhVjoyImporter.java): R8 now
-obfuscates `VJoyLayout` and `VirtualKeyLayoutDao`, whose kept FQNs it relied on
-(`AppDatabase` itself still keeps its name), and the host save-coroutine block
-class changed shape. Those three anchors need re-deriving before import works
-again. Export needs none of them, so save-to-file is unaffected.
-[BhVjoyJson](extension/BhVjoyJson.java) already resolves the layout class from a
-live instance rather than by name, so it needed no change.
+**Import on 6.1.1 — what had to be re-anchored.** The four bytecode hooks
+re-discovered themselves unchanged (they are anchored on the `vcontroller/*` URL
+fragments, not R8 letters — the share repo has drifted
+`Lrqn;`→`Lkkm;`→`Lqkm;`→`Laun;`→`Lpat;` across bases and the locator has never
+needed editing). What 6.1.1 broke was the *import* half of
+[BhVjoyImporter](extension/BhVjoyImporter.java), which relied on kept FQNs that R8
+now obfuscates. Import works again; the re-derived anchors are:
+
+| what | 6.1.1 | how it was found |
+| --- | --- | --- |
+| `VJoyLayout` | `tvr` | its `$serializer` keeps the original `serialName` string |
+| host save-coroutine block | `f8n` case `0x14` | horizontally merged — synthetic `<init>(…I)V` plus an int switch (6.0.9: `qpm`) |
+| `VJoyLayoutJson` holder | `c0s` field `a` | resolved from a live instance, not by name |
+
+The `serialName` trick is the reusable one: kotlinx.serialization's generated
+`$serializer` classes embed the *original* class name as a string literal, so any
+`@Serializable` type stays findable no matter how R8 re-letters it.
+
+The Room write went the other way — it dropped an anchor rather than re-deriving
+one. 6.0.9 nudged Room's invalidation log through the generated DAO
+(`findById` + `upsert`). That is impossible on 6.1.1: the layout DAO impl
+(`Ldet;`, returned by `AppDatabase->n()`) declares **only** a constructor, because
+R8 moved every query into per-query merged suspend lambdas, and both
+`VirtualKeyLayoutDao` and `VirtualKeyLayoutEntity` FQNs are gone. The replacement
+therefore uses **only kept library names, no R8 letters at all**:
+`androidx.room3.util.DBUtil#performSuspending(db, isReadOnly=false,
+inTransaction=true, block)`. Both flags matter — a TEMP-table write has to land on
+*Room's own* connection, since `room_table_modification_log` is per-connection and
+a write on our own `SQLiteDatabase` handle can never flip Room's `invalidated`
+flag.
+
+The `virtual_key_layout` schema itself did **not** change — its `CREATE TABLE`
+string is byte-identical to 6.0.9 (32 columns in both).
+
+Export needs none of these anchors, so save-to-file was never affected.
 
 **Cross-process / in-game.** `BhSafProxyActivity` is registered
 `android:multiprocess="true"` so it launches in the caller's process — the
@@ -405,13 +445,15 @@ tagged `base-apk-6.1.1` in this repo (e.g.
 `GameHub_6.1.1_bdbf223c9f36bbd862fa39c6a2841a60.apk`). The workflow
 `gh release download`s from there.
 
-`scripts/apply_vibration_patches.py` is **not run on 6.1.1** — the engine it
-hooks now lives in the downloaded plugin (see
-[PC engine plugin](#pc-engine-plugin-611)). Pointed at a 6.1.1 tree it detects
-the plugin host activity and exits with an explanation rather than a misleading
-"anchor not found". The CI step is commented out for the same reason. Its 6.0.9
-anchor set (`pz7` Physical rumble `h(II)V` / stop `g()V`, `iqn` env builder
-ctor) is preserved at the top of the script for whenever the engine returns.
+`scripts/apply_vibration_patches.py` **is** run on 6.1.1, but does less than it
+used to. It detects a 6.1.1 tree by the presence of
+`PcEnginePluginHostActivity.smali` and then applies **only** the winebus trigger —
+the dual-motor hooks it used to install now live in the downloaded plugin and are
+handled by the four plugin scripts instead (see
+[PC engine plugin](#pc-engine-plugin-611)). Its base-APK anchor set is preserved at
+the top of the script for whenever the engine returns — `y98` Physical rumble
+`h(II)V` / stop `g()V` and `f1p` env builder ctor for 6.0.9, which had themselves
+drifted from 6.0.8's `pz7` / `iqn`.
 
 `scripts/apply_privacy_patches.py` is a port of the bannerhub-revanced
 privacy patch set. Manifest layer adds Firebase kill-switch meta-data,
