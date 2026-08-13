@@ -157,40 +157,64 @@ import sys
 from pathlib import Path
 
 # --- channel 1: device-performance session-summary uploader ----------------
-UPLOADER = "smali/xjp/mv1.smali"
+#
+# Every letter here drifts on a plugin bump (101 -> 102: uploader Lxjp/mv1; ->
+# Lxjp/qv1;, result Lxjp/jv1; -> Lxjp/nv1;), and both stale letters still resolve
+# to REAL classes in 102 — 102's mv1 is the "upload success" log lambda and its
+# jv1 has an entirely different constructor. So nothing here is pinned by name.
+#
+# The uploader is identified by its method pair: the batch upload c(J, Cont) plus
+# the bootstrap/retry sibling b(I, J, Cont). Unique in both 101 and 102.
 UPLOADER_METHOD = (
     ".method public final c(JLkotlin/coroutines/jvm/internal/ContinuationImpl;)"
     "Ljava/lang/Object;\n"
 )
-RESULT_TYPE = "Lxjp/jv1;"
-
-UPLOADER_STUB = (
-    "\n"
-    "    # BH: privacy patch — drop the device-performance session-summary\n"
-    "    # upload. Returns the host's own \"nothing uploaded\" result, which this\n"
-    "    # method already builds on its empty-batch / missing-summary / failure\n"
-    "    # paths, so the reporter just logs uploadedBatches=0. Sampling and local\n"
-    "    # summary storage are untouched; only the network send is removed.\n"
-    f"    new-instance v0, {RESULT_TYPE}\n"
-    f"    invoke-direct {{v0}}, {RESULT_TYPE}-><init>()V\n"
-    "    return-object v0\n"
+UPLOADER_SIBLING = (
+    ".method public final b(IJLkotlin/coroutines/jvm/internal/ContinuationImpl;)"
+    "Ljava/lang/Object;\n"
 )
 
+# The "nothing uploaded" result is whatever the uploader itself builds with a
+# no-arg ctor on its empty-batch / missing-summary / failure paths. Deriving it
+# from the method body is what caught jv1 -> nv1; hardcoding it would have shipped
+# a NoSuchMethodError exactly like the base APK's Ldd7; did.
+NOARG_CTOR_RE = re.compile(
+    r"invoke-direct \{[pv]\d+\}, (L[\w$/]+;)-><init>\(\)V")
+
+def uploader_stub(result_type: str) -> str:
+    return (
+        "\n"
+        "    # BH: privacy patch — drop the device-performance session-summary\n"
+        "    # upload. Returns the host's own \"nothing uploaded\" result, which\n"
+        "    # this method already builds on its empty-batch / missing-summary /\n"
+        "    # failure paths, so the reporter just logs uploadedBatches=0.\n"
+        "    # Sampling and local summary storage are untouched; only the network\n"
+        "    # send is removed.\n"
+        f"    new-instance v0, {result_type}\n"
+        f"    invoke-direct {{v0}}, {result_type}-><init>()V\n"
+        "    return-object v0\n"
+    )
+
 # --- channel 2: WineGameUsageTracker playtime heartbeat --------------------
-HEARTBEAT_BRIDGE = "smali/xjp/jg4.smali"
-HEARTBEAT_BRIDGE_METHOD = (
-    ".method public static synthetic e(Lxjp/jg4;Ljava/lang/String;Lxjp/fs9;"
-    "Lkotlin/coroutines/jvm/internal/SuspendLambda;)Ljava/lang/Object;\n"
+#
+# Same story: the bridge class drifts (101 Lxjp/jg4; -> 102 Lxjp/kg4;) and so does
+# the heartbeat DTO in its signature (Lxjp/fs9; -> Lxjp/us9;). What is stable is
+# the shape — a static synthetic `e` taking (self, String, <DTO>, SuspendLambda)
+# — so match that with the self type and DTO wildcarded, then read the real names
+# back out of the match.
+HEARTBEAT_BRIDGE_METHOD_RE = re.compile(
+    r"\.method public static synthetic e\((L[\w$/]+;)Ljava/lang/String;"
+    r"(L[\w$/]+;)Lkotlin/coroutines/jvm/internal/SuspendLambda;\)"
+    r"Ljava/lang/Object;\n"
 )
 # The generic POST helper this bridge delegates to — proof we have the right
 # method after a plugin bump. Deliberately NOT stubbed: ~30 other plugin
-# classes post through it.
-HEARTBEAT_BRIDGE_DELEGATE = (
-    "Lxjp/jg4;->d(Ljava/lang/String;Ljava/lang/Object;"
+# classes post through it. {cls} is filled in with the derived bridge type.
+HEARTBEAT_BRIDGE_DELEGATE_FMT = (
+    "{cls}->d(Ljava/lang/String;Ljava/lang/Object;"
     "Lkotlin/jvm/functions/Function1;"
     "Lkotlin/coroutines/jvm/internal/ContinuationImpl;)Ljava/lang/Object;"
 )
-HEARTBEAT_CALLEE = "Lxjp/jg4;->e("
 HEARTBEAT_PATHS = ("heartbeat/game/start", "heartbeat/game/update",
                    "heartbeat/game/end")
 
@@ -259,8 +283,8 @@ def smali_files(root: Path):
                     yield Path(dirpath) / name
 
 
-def assert_heartbeat_funnel(root: Path) -> None:
-    """Prove Lxjp/jg4;->e() is still heartbeat-only before stubbing it.
+def assert_heartbeat_funnel(root: Path, bridge_cls: str) -> None:
+    """Prove the bridge's e() is still heartbeat-only before stubbing it.
 
     Three separate wrong privacy claims in this project's history came from
     grepping a string literal and concluding a channel was gone, so this does
@@ -275,10 +299,11 @@ def assert_heartbeat_funnel(root: Path) -> None:
     If a future plugin routes a non-heartbeat endpoint through the bridge, or
     splits the heartbeat across more call sites, this fails instead of silently
     over- or under-reaching."""
+    callee = f"{bridge_cls}->e("
     callers = {}
     for path in smali_files(root):
         text = read(path)
-        n = text.count(HEARTBEAT_CALLEE)
+        n = text.count(callee)
         if not n:
             continue
         rel = path.relative_to(root).as_posix()
@@ -286,7 +311,7 @@ def assert_heartbeat_funnel(root: Path) -> None:
         callers[rel] = (n, found, sum(text.count(f'"{p}"') for p in HEARTBEAT_PATHS))
 
     if len(callers) != 3:
-        die(f"expected exactly 3 call sites for {HEARTBEAT_CALLEE}, found "
+        die(f"expected exactly 3 call sites for {callee}, found "
             f"{len(callers)}: {sorted(callers)} — the heartbeat funnel changed "
             f"shape; re-anchor before stubbing (a non-heartbeat caller would be "
             f"broken by this stub, a missing one would leak the Steam ID64).")
@@ -294,7 +319,7 @@ def assert_heartbeat_funnel(root: Path) -> None:
     seen = []
     for rel, (n_calls, found, n_literals) in sorted(callers.items()):
         if n_calls != 1:
-            die(f"{rel} invokes {HEARTBEAT_CALLEE} {n_calls} times (expected 1) "
+            die(f"{rel} invokes {callee} {n_calls} times (expected 1) "
                 f"— re-verify the funnel.")
         if len(found) != 1 or n_literals != 1:
             die(f"{rel} carries {n_literals} heartbeat/game/* literal(s) "
@@ -339,34 +364,106 @@ def stub_method(root: Path, rel: str, header: str, stub: str, what: str,
     print(f"OK: {ok_msg}")
 
 
+def locate_uploader(root: Path) -> str:
+    """Relative path of the perf uploader, found by its method pair."""
+    hits = []
+    for path in smali_files(root):
+        text = read(path)
+        if UPLOADER_METHOD in text and UPLOADER_SIBLING in text:
+            hits.append(path.relative_to(root).as_posix())
+    if not hits:
+        die("perf uploader not found — no class declares both\n"
+            f"  {UPLOADER_METHOD.strip()}\n  {UPLOADER_SIBLING.strip()}\n"
+            "  (re-anchor; the upload/retry method pair changed shape.)")
+    if len(hits) > 1:
+        die(f"perf uploader shape is non-unique ({len(hits)}): {hits}")
+    print(f"    perf uploader: {hits[0]}")
+    return hits[0]
+
+
+def derive_nothing_uploaded(root: Path, rel: str, header: str) -> str:
+    """The result type the uploader itself builds with a no-arg ctor.
+
+    Derived, never hardcoded: on plugin 102 the 101 letter (Lxjp/jv1;) still
+    exists but takes (Lxjp/kv1;, ContinuationImpl) — returning it would assemble
+    fine and then NoSuchMethodError at runtime.
+    """
+    src = read(root / rel)
+    start = src.index(header)
+    end = src.find("\n.end method", start)
+    found = set(NOARG_CTOR_RE.findall(src[start:end]))
+    if not found:
+        die("could not derive the 'nothing uploaded' result type — the uploader "
+            "builds nothing with a no-arg ctor. Re-anchor by hand.")
+    if len(found) > 1:
+        die(f"ambiguous 'nothing uploaded' result type {sorted(found)}.")
+    result = found.pop()
+    # Belt and braces: the ctor we are about to emit must actually exist.
+    # NOTE the `synthetic` variant — this result type's no-arg ctor is
+    # `public synthetic constructor` in both plugin 101 and 102, and a pattern
+    # requiring plain `public constructor` rejects the CORRECT class. Same trap
+    # as the 3-dot menu row and the Physical vibrator sibling.
+    name = result[1:-1].split("/")[-1]
+    hits = list((root / "smali").rglob(f"{name}.smali"))
+    if not hits:
+        die(f"{result} does not exist in this plugin — re-derive.")
+    text = read(hits[0])
+    if not any(v in text for v in (".method public constructor <init>()V",
+                                   ".method public synthetic constructor <init>()V")):
+        die(f"{result} has no no-arg constructor in this plugin — re-derive.")
+    print(f"    derived {result} as the 'nothing uploaded' result")
+    return result
+
+
 def patch_perf_uploader(root: Path) -> None:
-    # The log strings live in the LAMBDAS, not here, so identify the method the
-    # same way it was originally located: it is the one that builds the "upload
-    # start" log lambda Lxjp/hv1;, and it must return the Lxjp/jv1; result we
-    # stub with. (An earlier version of this check looked for the log string in
-    # this file and correctly refused to patch — keep the signal on real
-    # instructions.)
+    # The log strings live in the LAMBDAS, not in the uploader, so the method is
+    # identified by its own instructions: the upload/retry method pair, plus the
+    # result type it builds on its bail-out paths. (An earlier version looked for
+    # the log string in this file and correctly refused to patch — keep the
+    # signal on real instructions.)
+    rel = locate_uploader(root)
+    result_type = derive_nothing_uploaded(root, rel, UPLOADER_METHOD)
     stub_method(
-        root, UPLOADER, UPLOADER_METHOD, UPLOADER_STUB,
-        "perf uploader Lxjp/mv1;->c",
-        [("Lxjp/hv1;", "it builds the upload-start log lambda"),
-         (f"{RESULT_TYPE}-><init>()V",
+        root, rel, UPLOADER_METHOD, uploader_stub(result_type),
+        f"perf uploader {rel}",
+        [(f"{result_type}-><init>()V",
           "returning this type is only safe if the method's own bail-out paths "
           "already construct it")],
-        "Lxjp/mv1;->c: drop device_perf_session_summary upload",
+        "drop device_perf_session_summary upload",
     )
 
 
+def locate_heartbeat_bridge(root: Path):
+    """Return (relative path, method header, bridge type) for the heartbeat
+    bridge, matched by shape with the self type and DTO wildcarded."""
+    hits = []
+    for path in smali_files(root):
+        m = HEARTBEAT_BRIDGE_METHOD_RE.search(read(path))
+        if m:
+            hits.append((path.relative_to(root).as_posix(),
+                         m.group(0), m.group(1), m.group(2)))
+    if not hits:
+        die("heartbeat bridge not found — no class declares a static synthetic\n"
+            "  e(<self>, String, <dto>, SuspendLambda) -> Object\n"
+            "  (re-anchor; the funnel signature changed shape.)")
+    if len(hits) > 1:
+        die(f"heartbeat bridge shape is non-unique ({len(hits)}): "
+            + ", ".join(h[0] for h in hits))
+    rel, header, cls, dto = hits[0]
+    print(f"    heartbeat bridge: {rel}  ({cls}, DTO {dto})")
+    return rel, header, cls
+
+
 def patch_heartbeat(root: Path) -> None:
-    assert_heartbeat_funnel(root)
+    rel, header, cls = locate_heartbeat_bridge(root)
+    assert_heartbeat_funnel(root, cls)
     stub_method(
-        root, HEARTBEAT_BRIDGE, HEARTBEAT_BRIDGE_METHOD, HEARTBEAT_STUB,
-        "heartbeat bridge Lxjp/jg4;->e",
-        [(HEARTBEAT_BRIDGE_DELEGATE,
-          "the bridge must still delegate to the generic POST helper jg4->d, "
+        root, rel, header, HEARTBEAT_STUB,
+        f"heartbeat bridge {cls}->e",
+        [(HEARTBEAT_BRIDGE_DELEGATE_FMT.format(cls=cls),
+          "the bridge must still delegate to the generic POST helper ->d, "
           "which is what makes it the send path")],
-        "Lxjp/jg4;->e: drop heartbeat/game/{start,update,end} POSTs "
-        "(Steam ID64 leak)",
+        "drop heartbeat/game/{start,update,end} POSTs (Steam ID64 leak)",
     )
 
 

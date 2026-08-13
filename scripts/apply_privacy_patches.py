@@ -250,8 +250,11 @@ def assert_ctors_resolve(root: Path, body: str, label: str) -> None:
         if not hits:
             problems.append(f"{cls} does not exist in this base")
             continue
-        want = f".method public constructor <init>({sig})V"
-        if want not in read(hits[0]):
+        # Accept the `synthetic` variant: R8 emits some constructors that way,
+        # and requiring plain `public constructor` would reject a CORRECT class.
+        want = [f".method public constructor <init>({sig})V",
+                f".method public synthetic constructor <init>({sig})V"]
+        if not any(w in read(hits[0]) for w in want):
             have = [ln.strip() for ln in read(hits[0]).splitlines()
                     if ln.startswith(".method") and "<init>" in ln]
             problems.append(

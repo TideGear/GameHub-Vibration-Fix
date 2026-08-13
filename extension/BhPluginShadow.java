@@ -66,9 +66,15 @@ public final class BhPluginShadow {
     /**
      * Plugin versionCode the shadow classes were cut against. See gate 2 above.
      * Bump together with a re-run of apply_plugin_rumble_patches.py +
-     * build_plugin_shadow_dex.py against the new plugin.
+     * apply_plugin_privacy_patches.py + build_plugin_shadow_dex.py against the
+     * new plugin.
+     *
+     * 101 = the GameHub 6.1.1-era plugin (schemaVersion 2).
+     * 102 = the 6.1.2-era plugin (schemaVersion 3). 6.1.2's host hard-requires
+     *       schema 3, so 101 is not merely stale there — the host rejects it
+     *       outright with "PC engine plugin schema 2 is not supported".
      */
-    private static final long EXPECTED_PLUGIN_VERSION_CODE = 101L;
+    private static final long EXPECTED_PLUGIN_VERSION_CODE = 102L;
 
     /** Written into the APK's assets/ by the build. */
     private static final String SHADOW_ASSET = "bh_pcengine_shadow.dex";

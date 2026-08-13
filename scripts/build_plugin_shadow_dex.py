@@ -34,19 +34,24 @@ import tempfile
 import zipfile
 from pathlib import Path
 
-# Keep this list minimal — see the module docstring.
-SHADOW_CLASSES = [
-    # dual-motor rumble (apply_plugin_rumble_patches.py)
-    "smali/com/winemu/core/gamepad/GamepadServerManager.smali",
-    "smali/xjp/fi3.smali",
-    # device-performance telemetry kill (apply_plugin_privacy_patches.py)
-    "smali/xjp/mv1.smali",
-    # WineGameUsageTracker playtime-heartbeat kill — the static bridge
-    # Lxjp/jg4;->e() that all three of heartbeat/game/{start,update,end} funnel
-    # through (apply_plugin_privacy_patches.py). The rest of Lxjp/jg4; (the
-    # generic GET/POST helpers ~30 other plugin classes use) is copied verbatim.
-    "smali/xjp/jg4.smali",
-]
+# The shadow set is DISCOVERED, not listed: it is exactly the classes the patch
+# scripts touched, i.e. the files carrying PATCH_MARKER.
+#
+# It used to be a hardcoded list of R8 letters, which meant every plugin bump
+# needed a manual edit here in lockstep with the two patch scripts — and getting
+# it wrong fails silently in the worst way. Plugin 101 -> 102 drifted every one of
+# them (fi3 -> ji3 dual-motor, mv1 -> qv1 perf uploader, jg4 -> kg4 heartbeat
+# bridge), and a stale entry would either crash the build or, worse, ship a shadow
+# missing a privacy stub while still reporting success.
+#
+# Deriving from the marker keeps this in sync by construction and preserves the
+# "shadow only what was patched" rule the docstring argues for: anything the
+# scripts did not touch is not included, so it still resolves from the plugin APK.
+#
+# How many classes to expect, as a tripwire against a patch script silently
+# no-oping: 2 for rumble (GamepadServerManager + the Physical vibrator) and 2 for
+# privacy (perf uploader + heartbeat bridge).
+EXPECTED_SHADOW_CLASSES = 4
 
 # Marker proving the sources were patched; refuse to ship an unpatched shadow
 # (it would be a pure no-op that silently costs us the fix it was built for).
@@ -99,20 +104,35 @@ def main():
 
     work = Path(tempfile.mkdtemp(prefix="bh_shadow_"))
     try:
+        smali_root = plugin_dir / "smali"
+        if not smali_root.is_dir():
+            die(f"{plugin_dir}/smali not found — point this at a decompiled "
+                f"PC-engine plugin tree.")
+        patched = sorted(
+            f for f in smali_root.rglob("*.smali")
+            if PATCH_MARKER in f.read_text(encoding="utf-8", errors="replace")
+        )
+        if not patched:
+            die(f"no class in {plugin_dir} carries the {PATCH_MARKER!r} marker — "
+                f"run apply_plugin_rumble_patches.py and "
+                f"apply_plugin_privacy_patches.py first; refusing to build an "
+                f"unpatched shadow dex (it would be a pure no-op that silently "
+                f"costs the fixes it was built for).")
+        if len(patched) != EXPECTED_SHADOW_CLASSES:
+            rel = ", ".join(p.relative_to(plugin_dir).as_posix() for p in patched)
+            die(f"expected {EXPECTED_SHADOW_CLASSES} patched classes, found "
+                f"{len(patched)}: {rel}\n"
+                f"  Too few means a patch script no-oped; too many means one "
+                f"touched something unintended. Both need a look — refusing to "
+                f"guess which.")
+
         staged = 0
-        for rel in SHADOW_CLASSES:
-            src = plugin_dir / rel
-            if not src.is_file():
-                die(f"shadow class missing from the plugin tree: {rel}")
-            text = src.read_text(encoding="utf-8", errors="replace")
-            if PATCH_MARKER not in text:
-                die(f"{rel} carries no {PATCH_MARKER!r} marker — run "
-                    f"apply_plugin_rumble_patches.py and "
-                    f"apply_plugin_privacy_patches.py first; refusing to build "
-                    f"an unpatched shadow dex.")
+        for src in patched:
+            rel = src.relative_to(plugin_dir).as_posix()
             dst = work / rel
             dst.parent.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(src, dst)
+            print(f"    shadowing {rel}")
             staged += 1
         (work / "AndroidManifest.xml").write_text(MANIFEST, encoding="utf-8",
                                                   newline="")

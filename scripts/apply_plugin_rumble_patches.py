@@ -62,9 +62,43 @@ from pathlib import Path
 HANDLER = "Lcom/xj/winemu/vibration/BhVibrationController;"
 
 GAMEPAD_SERVER = "smali/com/winemu/core/gamepad/GamepadServerManager.smali"
-PHYSICAL = "smali/xjp/fi3.smali"
-PHYSICAL_TYPE = "Lxjp/fi3;"
 DEVICE_ID_FIELD = "f:I"
+
+# The Physical-vibrator class is an R8 letter and drifts on every plugin bump
+# (6.1.1 plugin 101 Lxjp/fi3; -> plugin 102 Lxjp/ji3;, and 102's fi3 is an
+# unrelated kotlinx serializer, so a stale pin finds a real-but-wrong class).
+#
+# It has a same-shaped sibling — the phone/device vibrator, which also declares
+# f()V and g(II)V and also masks with 0xffff — so "has the right methods" is NOT
+# enough to tell them apart. Patching the sibling would route controller rumble
+# to the phone.
+#
+# What separates them is the constructor. Physical is built from a device
+# descriptor (deviceId int, name, flags…) and its ctor has been byte-identical
+# since the 6.0.9 base APK's Ly98;; the device sibling takes an Activity, because
+# a phone vibrator needs a Context. Verified unique in both plugin 101 and 102.
+PHYSICAL_CTOR = ".method public constructor <init>(ILjava/lang/String;ZIII" \
+                "Ljava/lang/String;Z)V"
+
+
+def locate_physical(root: Path):
+    """Return (relative smali path, `Lxjp/xxx;` type) for the Physical vibrator."""
+    hits = [f for f in (root / "smali").rglob("*.smali")
+            if PHYSICAL_CTOR in f.read_text(encoding="utf-8", errors="replace")]
+    if not hits:
+        die("Physical vibrator class not found — no class declares\n"
+            f"  {PHYSICAL_CTOR}\n"
+            "  (the device-descriptor ctor changed shape; re-anchor. Do NOT fall "
+            "back to matching on f()V/g(II)V alone — the phone-vibrator sibling "
+            "has both.)")
+    if len(hits) > 1:
+        rel = ", ".join(h.relative_to(root).as_posix() for h in hits)
+        die(f"Physical vibrator ctor is non-unique ({len(hits)}: {rel}).")
+    p = hits[0]
+    rel = p.relative_to(root).as_posix()
+    typ = "L" + rel[len("smali/"):-len(".smali")] + ";"
+    print(f"    Physical vibrator: {rel}  ({typ})")
+    return rel, typ
 
 REG_DIRECTIVE_RE = re.compile(r"^[ \t]*\.(?:locals|registers)[ \t]+(\d+)[ \t]*\n", re.M)
 
@@ -126,6 +160,7 @@ def main():
             "like the BASE APK's gutted shell, not the plugin's real class.")
 
     print("=== Plugin dual-motor rumble hooks ===")
+    physical, physical_type = locate_physical(root)
 
     # Hook 1 — entry point. Short-circuits the whole dispatch when our
     # controller handled it. .locals 1 already gives us v0.
@@ -145,18 +180,18 @@ def main():
     # Hook 2 — per-controller dual-motor dispatch. Returning true skips the
     # stock per-vibrator path, which averages low/high into a single float.
     prepend(
-        root, PHYSICAL,
+        root, physical,
         ".method public final g(II)V\n",
         "\n"
         "    # BH: PC-accurate controller dispatch (dual-motor low/high).\n"
-        f"    iget v0, p0, {PHYSICAL_TYPE}->{DEVICE_ID_FIELD}\n"
+        f"    iget v0, p0, {physical_type}->{DEVICE_ID_FIELD}\n"
         f"    invoke-static {{v0, p1, p2}}, {HANDLER}->"
         "dispatchToController(III)Z\n"
         "    move-result v0\n"
         "    if-eqz v0, :bh_phys_fallthrough\n"
         "    return-void\n"
         "    :bh_phys_fallthrough\n",
-        f"{PHYSICAL_TYPE}g(II)V: dual-motor dispatch",
+        f"{physical_type}g(II)V: dual-motor dispatch",
         min_locals=3,
     )
 
@@ -164,14 +199,14 @@ def main():
     # stop instead of a rumble. Injected before the method's first instruction,
     # while p0 is still `this` (f() reassigns p0 immediately after).
     prepend(
-        root, PHYSICAL,
+        root, physical,
         ".method public final f()V\n",
         "\n"
         "    # BH: notify the keepalive map that this device stopped, then fall\n"
         "    # through to the stock per-vibrator cancel loop.\n"
-        f"    iget v0, p0, {PHYSICAL_TYPE}->{DEVICE_ID_FIELD}\n"
+        f"    iget v0, p0, {physical_type}->{DEVICE_ID_FIELD}\n"
         f"    invoke-static {{v0}}, {HANDLER}->onStop(I)V\n",
-        f"{PHYSICAL_TYPE}f()V: keepalive-map cleanup",
+        f"{physical_type}f()V: keepalive-map cleanup",
     )
 
     print()
