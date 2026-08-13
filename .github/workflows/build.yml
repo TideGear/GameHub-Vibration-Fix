@@ -40,18 +40,16 @@ jobs:
           # base.apk) as an asset on this tag. Must match the versionCode in
           # extension/BhPluginShadow.java#EXPECTED_PLUGIN_VERSION_CODE.
           #
-          # 6.1.2 BUMPED THE PLUGIN CONTRACT: the host now hard-requires plugin
-          # schemaVersion == 3 (6.1.1 required 2) — see the equality check in the
-          # identity manager, Lvyi; on 6.1.2. So the 101 plugin (schemaVersion 2)
-          # is NOT valid here and a new plugin must be pulled from a device that
-          # has installed it, uploaded under a new pcengine-plugin-<code> tag,
-          # and EXPECTED_PLUGIN_VERSION_CODE raised to match. Until then this
-          # points at 101, the shadow's version gate refuses, and the build ships
-          # with dual-motor OFF (loudly: Toast + settings banner + logcat) plus —
-          # and this is the part that matters — the PLUGIN-SIDE PRIVACY KILLS
-          # INERT, because the heartbeat and device-perf stubs ride the same
-          # shadow dex. Sustained rumble is unaffected.
-          echo "plugin_tag=pcengine-plugin-101" >> "$GITHUB_OUTPUT"
+          # 6.1.2 bumped the plugin contract: the host hard-requires plugin
+          # schemaVersion == 3 (6.1.1 required 2), so the 101 plugin is rejected
+          # outright with "PC engine plugin schema 2 is not supported". Plugin 102
+          # (versionName 102-3) is the schema-3 build; it must match
+          # EXPECTED_PLUGIN_VERSION_CODE in extension/BhPluginShadow.java.
+          #
+          # If this asset is missing the build still works, but ships with
+          # dual-motor OFF *and* the plugin-side privacy kills inert -- the
+          # heartbeat (Steam ID64) and device-perf stubs ride the same shadow dex.
+          echo "plugin_tag=pcengine-plugin-102" >> "$GITHUB_OUTPUT"
           echo "Base version: 6.1.2"
 
       - name: Download original GameHub APK
@@ -64,9 +62,12 @@ jobs:
       - name: Download PC engine plugin APK
         id: plugin
         run: |
-          # Optional: without it the build still produces a working APK, just
-          # without dual-motor dispatch (sustained rumble is unaffected — that is
-          # a winebus patch on the Wine component tree, not the plugin).
+          # Optional in the sense that the build still SUCCEEDS without it, but
+          # it costs more than rumble: the shadow dex carries the dual-motor hooks
+          # AND the plugin-side privacy stubs, so omitting it leaves the heartbeat
+          # (Steam ID64 every 30 s) and device-perf telemetry live. Sustained rumble
+          # is genuinely unaffected — that is a winebus patch on the Wine component
+          # tree, not the plugin.
           if gh release download "${{ steps.base.outputs.plugin_tag }}" \
                 --pattern "*.apk" -D plugin/ -R ${{ github.repository }}; then
             echo "have_plugin=1" >> "$GITHUB_OUTPUT"
@@ -74,7 +75,8 @@ jobs:
           else
             echo "have_plugin=0" >> "$GITHUB_OUTPUT"
             echo "::warning::No ${{ steps.base.outputs.plugin_tag }} release asset;"\
-                 "building WITHOUT dual-motor rumble (shadow dex omitted)."
+                 "building WITHOUT dual-motor rumble AND WITHOUT the plugin-side"\
+                 "privacy kills (heartbeat/device-perf) — shadow dex omitted."
           fi
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -114,7 +116,7 @@ jobs:
 
       - name: Apply BhVibration smali patches
         run: |
-          # On 6.1.1 this applies ONLY the winebus disk-patch trigger, injected
+          # On 6.1.1+ this applies ONLY the winebus disk-patch trigger, injected
           # into the base APK's own PcEnginePluginHostActivity.onCreate — which
           # runs in the ":pcengine" process on every game launch, before the
           # plugin's Wine activity starts. That restores sustained rumble past
@@ -124,7 +126,7 @@ jobs:
           # walks.
           #
           # The three dual-motor dispatch hooks (onRumble entry, Physical
-          # dispatch/stop) are NOT applied on 6.1.1 — those classes moved into
+          # dispatch/stop) are NOT applied on 6.1.1+ — those classes moved into
           # the downloaded plugin. See README ("PC engine plugin"). The script
           # detects the layout itself and reports exactly what it applied.
           python3 scripts/apply_vibration_patches.py apktool_out

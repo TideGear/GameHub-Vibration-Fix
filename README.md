@@ -10,7 +10,7 @@ It is built on GameHub v6.x and heavily uses the work of
 [@The412Banner](https://github.com/The412Banner) as well as others. It
 also includes my own PC-accurate controller vibration fixes.
 
-> ### ⚠️ 6.1.2 status — base APK fully ported; the plugin half needs a new plugin
+> ### 6.1.2 — everything working, pinned to PC-engine plugin 102
 >
 > GameHub **6.1.1 moved the PC/Wine engine out of the APK** into a
 > separately-downloaded plugin, which splits the vibration work in two. GameScrub
@@ -18,32 +18,35 @@ also includes my own PC-accurate controller vibration fixes.
 > small "shadow" dex to the plugin's `DexClassLoader` path — see
 > [PC engine plugin](#pc-engine-plugin-611).
 >
-> **6.1.2 (versionCode 124) bumped the plugin contract.** The host now
-> hard-requires plugin `schemaVersion == 3` (6.1.1 required 2), so the
-> schemaVersion-2 plugin our shadow was cut against (`versionCode` 101) is no
-> longer valid. Where that leaves each feature:
+> **6.1.2 (versionCode 124) also bumped the plugin contract**: the host now
+> hard-requires plugin `schemaVersion == 3` (6.1.1 required 2), and rejects the
+> older one outright with *"PC engine plugin schema 2 is not supported"*. The
+> shadow is therefore cut against **plugin 102** (`versionName 102-3`,
+> `EXPECTED_PLUGIN_VERSION_CODE`), and all of it is verified on-device:
+> `dual-motor ACTIVE — shadowing PC engine plugin v102`, a real game session with
+> **zero** `heartbeat/game` POSTs and `uploadedBatches=0`.
 >
-> | | 6.1.2 |
-> |---|---|
-> | Privacy (base APK): Firebase, GMS Measurement, Mob Push, OEM push fleet, `/events`, heartbeat/playtime, OTA | **working** |
-> | Sustained rumble past 1 s | **working** — `winebus.so` stayed in the Wine component tree, so this never depended on the plugin |
-> | Layout export + import | **working** |
-> | "Online Update" badges | **working** |
-> | Dual-motor low/high dispatch | **off** until a schemaVersion-3 plugin is pulled |
-> | Plugin-side privacy: heartbeat (Steam ID64 every 30 s) + device-perf telemetry | **off — those trackers are live again** |
+> The one caveat is unchanged: dual-motor is version-pinned. If the plugin updates
+> again, the gate refuses the stale shadow and dual-motor switches itself off —
+> loudly, via Toast, a settings banner and logcat — while sustained rumble and the
+> engine keep working. Degraded, never broken.
 >
-> That last row is the one to care about, and it is easy to miss: the dual-motor
-> hooks and the plugin-side privacy stubs ride the **same** shadow dex, so a
-> version gate that refuses the shadow disables both. The refusal itself is
-> deliberate and loud (Toast + settings banner + logcat) rather than silent —
-> see [What happens when the plugin updates](#what-happens-when-the-plugin-updates).
+> **Be aware of what else that costs.** The shadow dex carries the dual-motor hooks
+> *and* the plugin-side privacy stubs, so a refused shadow also means the
+> heartbeat (your Steam ID64, every 30 s) and the device-perf telemetry are live
+> again. Treat a dual-motor warning as a privacy regression too, not just a rumble
+> one — see
+> [What happens when the plugin updates](#what-happens-when-the-plugin-updates).
 >
-> **To finish the port:** pull
+> **To re-pin after a plugin bump:** pull
 > `<filesDir>/plugins/com.xiaoji.egggame.plugin.pcengine/base.apk` from a device
-> running stock 6.1.2, upload it as a `pcengine-plugin-<versionCode>` release
-> asset, re-run the two plugin patch scripts + `build_plugin_shadow_dex.py`, and
+> running stock GameHub, upload it as a `pcengine-plugin-<versionCode>` release
+> asset, re-run `apply_plugin_rumble_patches.py` +
+> `apply_plugin_privacy_patches.py` + `build_plugin_shadow_dex.py` against it, and
 > raise `EXPECTED_PLUGIN_VERSION_CODE` in
-> [BhPluginShadow](extension/BhPluginShadow.java) to match.
+> [BhPluginShadow](extension/BhPluginShadow.java) to match. Every anchor in those
+> scripts is derived from the tree, so the letters drifting is expected and
+> shouldn't need edits.
 
 What you get over stock GameHub:
 
@@ -56,9 +59,7 @@ What you get over stock GameHub:
   (6.1.1 shrank part of this surface upstream: `heartbeat/game/update` and
   `heartbeat/game/end` no longer exist.) It also kills a channel that only
   appears in 6.1.1 — see below.
-- **Device-performance telemetry kill.** *(off on 6.1.2 pending a
-  schemaVersion-3 plugin — this stub ships in the shadow dex too, so the
-  channel is live again until then.)* The perf channel 6.0.9 stubbed
+- **Device-performance telemetry kill.** The perf channel 6.0.9 stubbed
   in the base APK did not go away; it moved into the downloaded PC-engine plugin
   and got a successor. On stock 6.1.1, every game session assigns a UUID and
   samples **fps, power draw, RAM (MB/percent/total) and GPU percent every ~10 s**,
@@ -66,11 +67,12 @@ What you get over stock GameHub:
   `user_id`, `gameId` and `sourceGameId` when the game closes (verified from
   device logs, which also show `summaryOnly=true legacyUpload=false` — i.e. the
   old endpoint is off and this replaced it). GameScrub stubs the uploader
-  (`Lxjp/mv1;->c`) through the same shadow dex used for dual-motor, so the
-  plugin APK is never modified. Sampling and local summary storage still run;
+  through the same shadow dex used for dual-motor, so the plugin APK is never
+  modified. The uploader's class letter drifts every plugin build
+  (101 `Lxjp/mv1;` → 102 `Lxjp/qv1;`), so the script locates it by its
+  upload/retry method pair rather than by name. Sampling and local summary storage still run;
   nothing is sent.
-- **Dual-motor low/high dispatch.** *(off on 6.1.2 pending a schemaVersion-3
-  plugin — see the note above; worked on 6.1.1.)*
+- **Dual-motor low/high dispatch.**
   Wine games calling `XInputSetState(slot, low, high)` get the two motors
   driven independently via Android `CombinedVibration.startParallel` on
   ≥ 2-motor controllers. Stock GameHub blends both motors into a single haptic
@@ -87,8 +89,7 @@ What you get over stock GameHub:
   [scripts/patch_winebus_rumble_duration.py](scripts/patch_winebus_rumble_duration.py)
   applies the same patch to extracted components for offline use.
 - **Instant release** when the game stops rumble — no phantom-suppression
-  timer extending the motor past the actual stop call. *(rides the same shadow
-  dex as dual-motor, so also off on 6.1.2 for now.)*
+  timer extending the motor past the actual stop call.
 - **Local export/import of on-screen control layouts.** The on-screen-controls
   "Share" / "Apply share code" flow is rerouted from XiaoJi's cloud to portable
   local `.gtheme` files via the Storage Access Framework — no cloud account, no
@@ -201,7 +202,8 @@ Wine.
 
 `BhPluginShadow` therefore gates on the installed plugin's `versionCode` (read
 from the host's own identity record) matching
-`EXPECTED_PLUGIN_VERSION_CODE`. On a mismatch it returns the dexPath unchanged:
+`EXPECTED_PLUGIN_VERSION_CODE` (102 for the 6.1.2-era plugin). On a mismatch it
+returns the dexPath unchanged:
 dual-motor turns **off**, the engine keeps working. Degraded, never broken.
 
 That degradation is deliberately **not silent** — it is reported three ways:
