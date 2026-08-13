@@ -217,6 +217,125 @@ def read(path):
         return p.read_text(encoding="latin-1")
 
 
+# Constructor invocations in an injected body: invoke-direct or
+# invoke-direct/range on L<letter>;-><init>(<sig>)V. Only letter-shaped classes
+# are checked — framework references (Lkotlin/Unit;, Ljava/util/ArrayList;) have
+# no file in the tree.
+INJECTED_CTOR_RE = re.compile(
+    r"invoke-direct(?:/range)? \{[^}]*\}, "
+    r"(L[a-z][a-z0-9]{1,5};)-><init>\(([^)]*)\)V"
+)
+
+
+def assert_ctors_resolve(root: Path, body: str, label: str) -> None:
+    """Refuse to inject smali whose constructor calls don't exist in this base.
+
+    This exists because of a real shipped bug. The Either success wrapper and the
+    /events result type were hardcoded R8 letters (Ldd7;, Lh88;). On 6.1.2 BOTH
+    classes still exist, but neither declares the constructor we were calling —
+    dd7 became an unrelated class with only a no-arg ctor, and the /events result
+    moved to Lk88;. So the anchors all verified, the patches reported OK, the APK
+    assembled, and the app died at runtime with
+
+        NoSuchMethodError: No direct method <init>(Ljava/lang/Object;)V in Ldd7;
+
+    the first time a stubbed call ran. The lesson is specifically that checking
+    the class EXISTS is not enough — a stale letter usually still resolves to
+    *some* class. Verify the exact constructor.
+    """
+    problems = []
+    for cls, sig in INJECTED_CTOR_RE.findall(body):
+        name = cls[1:-1]
+        hits = list(root.glob(f"smali*/{name}.smali"))
+        if not hits:
+            problems.append(f"{cls} does not exist in this base")
+            continue
+        want = f".method public constructor <init>({sig})V"
+        if want not in read(hits[0]):
+            have = [ln.strip() for ln in read(hits[0]).splitlines()
+                    if ln.startswith(".method") and "<init>" in ln]
+            problems.append(
+                f"{cls} exists ({hits[0].relative_to(root).as_posix()}) but "
+                f"declares no <init>({sig})V; it has: "
+                + (", ".join(h.replace('.method ', '') for h in have) or "none"))
+    if problems:
+        die(f"{label}: injected body would not resolve at runtime:\n"
+            + "\n".join(f"  - {p}" for p in problems)
+            + "\n  These are R8 letters and drift every release — re-derive "
+              "them from the tree rather than hardcoding.")
+
+
+def locate_class_by_ctor(root: Path, ctor_sig: str, label: str) -> str:
+    """Find the one class declaring `ctor_sig`, returned as `Lname;`.
+
+    Used for result/wrapper types we CONSTRUCT rather than call into, where the
+    constructor signature is the stable part and the class name is a letter
+    (/events result: Lyw5; 6.0.4 -> Lh76; 6.0.9 -> Lh88; 6.1.1 -> Lk88; 6.1.2).
+    """
+    needle = f".method public constructor <init>({ctor_sig})V"
+    hits = [f for d in sorted(root.glob("smali*")) if d.is_dir()
+            for f in d.rglob("*.smali") if needle in read(f)]
+    if not hits:
+        die(f"{label}: no class declares <init>({ctor_sig})V — re-anchor.")
+    if len(hits) > 1:
+        rel = ", ".join(h.relative_to(root).as_posix() for h in hits)
+        die(f"{label}: ctor signature is non-unique ({len(hits)}: {rel}).")
+    name = hits[0].stem
+    print(f"    located L{name}; for {label}")
+    return f"L{name};"
+
+
+# The repo's Either: two sibling classes over one base, one wrapping a decoded
+# payload and one wrapping a mapped error. Both are letters that drift (6.1.1
+# success Ldd7; / failure Lcd7; over Led7;; 6.1.2 success Lgd7; / failure Lfd7;
+# over Lhd7;), and getting them BACKWARDS is worse than failing: callers would
+# treat every stubbed call as an error and surface a toast.
+#
+# So derive Success from the method being stubbed, using the host's own
+# discriminator — the branch taken when Result.exceptionOrNull() is null:
+#
+#     invoke-static {vN}, Lkotlin/Result;->exceptionOrNull-impl(...)
+#     move-result-object vM
+#     if-nez vM, :cond_X          <- non-null = failure, so the fall-through...
+#     new-instance vK, L<Success>;   <- ...builds Success
+EITHER_SUCCESS_RE = re.compile(
+    r"exceptionOrNull-impl\([^\n]*\n"
+    r"(?:[ \t]*\.line \d+\n|[ \t]*\n)*"
+    r"[ \t]*move-result-object ([vp]\d+)\n"
+    r"(?:[ \t]*\.line \d+\n|[ \t]*\n)*"
+    r"[ \t]*if-nez \1, :\w+\n"
+    r"(?:[ \t]*\.line \d+\n|[ \t]*\n)*"
+    r"[ \t]*new-instance [vp]\d+, (L[\w$/]+;)\n"
+)
+
+
+def either_success_in_method(path, header: str, label: str) -> str:
+    """Derive the Either Success class from the body of the method we stub.
+
+    Requires every occurrence in the method to agree, which doubles as a check
+    that the pattern still means what we think it does.
+    """
+    src = read(Path(path))
+    if header not in src:
+        die(f"{label}: method not found while deriving the Either success type")
+    start = src.index(header)
+    end = src.find("\n.end method", start)
+    # group(1) is the register (needed only for the backreference); group(2) is
+    # the class. findall() would hand back (register, class) tuples here, so use
+    # finditer and take the class explicitly.
+    found = {m.group(2) for m in EITHER_SUCCESS_RE.finditer(src[start:end])}
+    if not found:
+        die(f"{label}: could not derive the Either success type — no "
+            f"exceptionOrNull/if-nez/new-instance sequence in the method. "
+            f"Re-derive by hand and check the Either shape did not change.")
+    if len(found) > 1:
+        die(f"{label}: ambiguous Either success type {sorted(found)} — the "
+            f"method builds more than one wrapper on its success path.")
+    success = found.pop()
+    print(f"    derived {success} as the Either success wrapper for {label}")
+    return success
+
+
 def locate_class(root: Path, needles, method_header, label: str,
                  exclude=()) -> Path:
     """Find the one smali file containing every string in `needles` AND the
@@ -650,16 +769,17 @@ def strip_native_libs(root: Path) -> None:
 # ---------------------------------------------------------------------------
 
 # --- 6.1.1 result-wrapper types -------------------------------------------
-# The network layer returns an Either-shaped pair, both extending Led7; with a
-# single (Ljava/lang/Object;)V ctor:
-#   Ldd7;  SUCCESS  (built where exceptionOrNull == null, and where the decoded
-#                    payload is wrapped)
-#   Lcd7;  FAILURE  (wraps the mapped error object)
-# Verified by reading Lby9;->e: the decoded ArrayList is wrapped in Ldd7; and
-# the Throwable path builds Lcd7;. Getting these backwards would make callers
-# treat a stub as an error and surface a toast, so re-verify on a base bump.
-# NOTE: includes the trailing ';' — do not append another when interpolating.
-EITHER_SUCCESS = "Ldd7;"
+# The network layer returns an Either-shaped pair, both extending one base with a
+# single (Ljava/lang/Object;)V ctor: one wraps the decoded payload (SUCCESS), the
+# other the mapped error (FAILURE). Both are R8 letters and BOTH DRIFT:
+#   6.1.1  success Ldd7;  failure Lcd7;  over Led7;
+#   6.1.2  success Lgd7;  failure Lfd7;  over Lhd7;
+# This used to be a hardcoded EITHER_SUCCESS constant, which is exactly how 6.1.2
+# shipped broken: dd7 became an unrelated class with a no-arg ctor, so the stubs
+# assembled fine and the app died at runtime with NoSuchMethodError. It is now
+# derived per-method by either_success_in_method() — see that function for the
+# discriminator, and assert_ctors_resolve() for the guard that would have caught
+# the stale letter at build time.
 
 # Heartbeat POST short-circuit. 6.1.1 collapsed the heartbeat surface: only
 # heartbeat/game/start survives (as a Lazy<String> in Loe0;->a, consumed by
@@ -668,16 +788,24 @@ EITHER_SUCCESS = "Ldd7;"
 # no-op-but-successful beat. 6.1.1 leaves kotlin.Unit unobfuscated, so the
 # literal Lkotlin/Unit;->INSTANCE resolves (on 6.0.7-6.0.9 it was Lx6m;->a and
 # a literal kotlin.Unit reference threw NoClassDefFoundError).
-HEARTBEAT_UNIT_PREPEND = (
-    "    # BH: privacy patch — short-circuit the heartbeat POST. Returns the\n"
-    "    # same Ldd7;(Unit) success wrapper the method's own early-out path\n"
-    "    # builds, so callers see a successful no-op beat and no HTTP happens.\n"
-    "    sget-object v0, Lkotlin/Unit;->INSTANCE:Lkotlin/Unit;\n"
-    f"    new-instance v1, {EITHER_SUCCESS}\n"
-    f"    invoke-direct {{v1, v0}}, {EITHER_SUCCESS}-><init>(Ljava/lang/Object;)V\n"
-    "    return-object v1\n"
-    "\n"
-)
+def heartbeat_unit_prepend(success: str) -> str:
+    """Unit in the repo's own success wrapper, i.e. exactly what the method's own
+    early-out path returns — indistinguishable from a no-op-but-successful beat.
+
+    6.1.1+ leaves kotlin.Unit unobfuscated so the literal resolves (on
+    6.0.7-6.0.9 it was Lx6m;->a and a literal kotlin.Unit reference threw
+    NoClassDefFoundError).
+    """
+    return (
+        "    # BH: privacy patch — short-circuit the heartbeat POST. Returns the\n"
+        "    # same success wrapper the method's own early-out path builds, so\n"
+        "    # callers see a successful no-op beat and no HTTP happens.\n"
+        "    sget-object v0, Lkotlin/Unit;->INSTANCE:Lkotlin/Unit;\n"
+        f"    new-instance v1, {success}\n"
+        f"    invoke-direct {{v1, v0}}, {success}-><init>(Ljava/lang/Object;)V\n"
+        "    return-object v1\n"
+        "\n"
+    )
 
 # Synthetic Lh88 success (6.0.9 Lh76;, 6.0.4 Lyw5;) — 4-field data class
 # (Z, Integer, String, Throwable) + int default-mask; the 6.1.1 ctor signature
@@ -686,33 +814,48 @@ HEARTBEAT_UNIT_PREPEND = (
 # 35c), so we use invoke-direct/range. (35c silently truncates at assembly time
 # without flagging an error in some baksmali builds — bannerhub-revanced hit
 # this exact pitfall on first attempt.)
-EVENTS_SUCCESS_PREPEND = (
-    "    # BH: privacy patch — early-return synthetic success before any\n"
-    "    # URL string is allocated or HTTP client is touched.\n"
-    "    new-instance v0, Lh88;\n"
-    "    const/4 v1, 0x1\n"
-    "    const/4 v2, 0x0\n"
-    "    const/4 v3, 0x0\n"
-    "    const/4 v4, 0x0\n"
-    "    const/4 v5, 0x0\n"
-    "    invoke-direct/range {v0 .. v5}, Lh88;-><init>(ZLjava/lang/Integer;"
-    "Ljava/lang/String;Ljava/lang/Throwable;I)V\n"
-    "    return-object v0\n"
-    "\n"
-)
+EVENTS_RESULT_CTOR = ("ZLjava/lang/Integer;Ljava/lang/String;"
+                      "Ljava/lang/Throwable;I")
+
+
+def events_success_prepend(result_cls: str) -> str:
+    """Synthetic 4-field success result; `result_cls` is derived, not hardcoded
+    (6.0.4 Lyw5; -> 6.0.9 Lh76; -> 6.1.1 Lh88; -> 6.1.2 Lk88;).
+
+    The ctor takes 6 registers including `this`, which exceeds invoke-direct's
+    5-register cap (format 35c), so this uses invoke-direct/range — 35c silently
+    truncates at assembly time in some baksmali builds rather than erroring.
+    """
+    return (
+        "    # BH: privacy patch — early-return synthetic success before any\n"
+        "    # URL string is allocated or HTTP client is touched.\n"
+        f"    new-instance v0, {result_cls}\n"
+        "    const/4 v1, 0x1\n"
+        "    const/4 v2, 0x0\n"
+        "    const/4 v3, 0x0\n"
+        "    const/4 v4, 0x0\n"
+        "    const/4 v5, 0x0\n"
+        f"    invoke-direct/range {{v0 .. v5}}, {result_cls}-><init>("
+        f"{EVENTS_RESULT_CTOR})V\n"
+        "    return-object v0\n"
+        "\n"
+    )
 
 # Empty playtime list. getUserPlayTimeList returns the Either success wrapper
 # around the decoded ArrayList of entries, so an empty ArrayList makes the UI
 # iterator run zero passes instead of crashing (6.0.9 Lyi5;, 6.0.4 Ln55;).
-PLAYTIME_EMPTY_PREPEND = (
-    "    # BH: privacy patch — return empty playtime list wrapper.\n"
-    "    new-instance v0, Ljava/util/ArrayList;\n"
-    "    invoke-direct {v0}, Ljava/util/ArrayList;-><init>()V\n"
-    f"    new-instance v1, {EITHER_SUCCESS}\n"
-    f"    invoke-direct {{v1, v0}}, {EITHER_SUCCESS}-><init>(Ljava/lang/Object;)V\n"
-    "    return-object v1\n"
-    "\n"
-)
+def playtime_empty_prepend(success: str) -> str:
+    """Empty list in the repo's own success wrapper. A bare Unit here would
+    ClassCastException in the caller, which iterates the payload."""
+    return (
+        "    # BH: privacy patch — return empty playtime list wrapper.\n"
+        "    new-instance v0, Ljava/util/ArrayList;\n"
+        "    invoke-direct {v0}, Ljava/util/ArrayList;-><init>()V\n"
+        f"    new-instance v1, {success}\n"
+        f"    invoke-direct {{v1, v0}}, {success}-><init>(Ljava/lang/Object;)V\n"
+        "    return-object v1\n"
+        "\n"
+    )
 
 
 def patch_heartbeat(root: Path) -> None:
@@ -758,19 +901,20 @@ def patch_heartbeat(root: Path) -> None:
         ".method public final a(Ljava/lang/String;"
         "Lkotlin/coroutines/jvm/internal/ContinuationImpl;)Ljava/lang/Object;\n"
     )
-    prepend_to_method(
-        locate_class(
-            root,
-            "null cannot be cast to non-null type "
-            "com.xiaoji.egggame.core.network.model.BaseResult<"
-            "com.xiaoji.egggame.launcher.interceptor.HeartbeatStartCheckData>",
-            start_header,
-            "heartbeat/game/start POST",
-        ),
+    start_path = locate_class(
+        root,
+        "null cannot be cast to non-null type "
+        "com.xiaoji.egggame.core.network.model.BaseResult<"
+        "com.xiaoji.egggame.launcher.interceptor.HeartbeatStartCheckData>",
         start_header,
-        HEARTBEAT_UNIT_PREPEND,
-        "stub heartbeat/game/start POST",
+        "heartbeat/game/start POST",
     )
+    start_body = heartbeat_unit_prepend(
+        either_success_in_method(start_path, start_header,
+                                 "heartbeat/game/start POST"))
+    assert_ctors_resolve(root, start_body, "heartbeat/game/start stub")
+    prepend_to_method(start_path, start_header, start_body,
+                      "stub heartbeat/game/start POST")
     # getUserPlayTimeList — Lby9; on 6.1.1, Lgy9; on 6.1.2; located by the
     # endpoint literal it holds. Returns the Either success wrapper around an
     # empty ArrayList so the UI iterator runs zero passes instead of crashing
@@ -779,17 +923,18 @@ def patch_heartbeat(root: Path) -> None:
         ".method public final e("
         "Lkotlin/coroutines/jvm/internal/ContinuationImpl;)Ljava/lang/Object;\n"
     )
-    prepend_to_method(
-        locate_class(
-            root,
-            "heartbeat/game/getUserPlayTimeList",
-            playtime_header,
-            "heartbeat/game/getUserPlayTimeList",
-        ),
+    playtime_path = locate_class(
+        root,
+        "heartbeat/game/getUserPlayTimeList",
         playtime_header,
-        PLAYTIME_EMPTY_PREPEND,
-        "stub heartbeat/game/getUserPlayTimeList",
+        "heartbeat/game/getUserPlayTimeList",
     )
+    playtime_body = playtime_empty_prepend(
+        either_success_in_method(playtime_path, playtime_header,
+                                 "heartbeat/game/getUserPlayTimeList"))
+    assert_ctors_resolve(root, playtime_body, "playtime stub")
+    prepend_to_method(playtime_path, playtime_header, playtime_body,
+                      "stub heartbeat/game/getUserPlayTimeList")
 
 
 def patch_analytics_events(root: Path) -> None:
@@ -823,19 +968,19 @@ def patch_analytics_events(root: Path) -> None:
         ".method public final a(Ljava/util/Collection;"
         "Lkotlin/coroutines/jvm/internal/ContinuationImpl;)Ljava/lang/Object;\n"
     )
-    prepend_to_method(
-        # Ll88; on 6.1.1, Lo88; on 6.1.2 — located by the endpoint literal it
-        # holds rather than the letter.
-        locate_class(
-            root,
-            "https://statistic-gamehub-api.vgabc.com/events",
-            events_header,
-            "statistic-gamehub-api/events POST",
-        ),
+    # Sender: Ll88; on 6.1.1, Lo88; on 6.1.2 — located by the endpoint literal it
+    # holds. Result type: located by its ctor signature, since we construct it.
+    events_path = locate_class(
+        root,
+        "https://statistic-gamehub-api.vgabc.com/events",
         events_header,
-        EVENTS_SUCCESS_PREPEND,
-        "stub statistic-gamehub-api/events",
+        "statistic-gamehub-api/events POST",
     )
+    events_body = events_success_prepend(
+        locate_class_by_ctor(root, EVENTS_RESULT_CTOR, "/events result type"))
+    assert_ctors_resolve(root, events_body, "/events stub")
+    prepend_to_method(events_path, events_header, events_body,
+                      "stub statistic-gamehub-api/events")
 
 
 OTA_METHOD_HEADER = (
