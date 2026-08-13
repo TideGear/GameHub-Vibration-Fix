@@ -145,11 +145,12 @@ and `pyi.A()` re-hashes on load and compares, throwing *"does not match its
 committed record"* on mismatch. There is no server signature and no embedded
 key, so a patched plugin can be re-validated by recomputing that record.
 
-**On-device layout (GameHub 6.1.1, versionCode 123).** Confirmed from the app's
-own logs under `/sdcard/Android/data/com.xiaoji.egggame/files/logs/`:
+**On-device layout.** Confirmed from the app's own logs under
+`/sdcard/Android/data/com.xiaoji.egggame/files/logs/` (paths verified on both
+6.1.1/plugin 101 and 6.1.2/plugin 102):
 
 ```
-files/plugins/com.xiaoji.egggame.plugin.pcengine/base.apk        the plugin (v101, ~21.7 MB)
+files/plugins/com.xiaoji.egggame.plugin.pcengine/base.apk        the plugin (v102, ~23.4 MB)
 files/plugins/com.xiaoji.egggame.plugin.pcengine/lib/arm64-v8a   its extracted native libs
 files/usr/opt/wine_proton11.0-arm64x/…                           the Wine tree — winebus.so
 files/usr/home/components/{Fex_*, dxvk-*, turnip_*, vkd3d-proton-*, …}
@@ -227,9 +228,38 @@ to return to "cleared", which is exactly the case prefs can't carry. The file
 mirror is cleared (deleted, not truncated) as soon as a load succeeds, so the
 banner disappears once dual-motor is working.
 
+**A refused shadow is also a privacy regression.** The same shadow dex carries the
+plugin-side privacy stubs — the playtime heartbeat (which posts the user's Steam
+ID64 every 30 s) and the device-perf session summary. A version mismatch disables
+those along with dual-motor, so the Toast and banner above should be read as
+"trackers are live again", not merely "rumble feels flat". They deliberately say
+dual-motor, because that is the user-visible symptom; this is the part that isn't.
+
 **Sustained rumble is immune to plugin updates** — it patches the Wine component
-tree, not the plugin, and its trigger doesn't touch plugin internals. Only
-dual-motor is version-pinned.
+tree, not the plugin, and its trigger doesn't touch plugin internals. It is the
+only rumble half that survives a mismatch.
+
+**Re-pinning is cheap by design.** Every anchor in
+`apply_plugin_rumble_patches.py`, `apply_plugin_privacy_patches.py` and
+`build_plugin_shadow_dex.py` is derived from the plugin tree rather than pinned to
+an R8 letter, because *every* letter drifted between plugin 101 and 102 (Physical
+`fi3`→`ji3`, perf uploader `mv1`→`qv1`, its result `jv1`→`nv1`, heartbeat bridge
+`jg4`→`kg4`, and all three heartbeat call sites). Re-running the three scripts
+against a new plugin and bumping `EXPECTED_PLUGIN_VERSION_CODE` should be the
+whole job.
+
+Two traps to know before hand-editing anything here:
+
+- A stale letter usually still resolves to a **real but wrong** class. Plugin 102's
+  `fi3` is an unrelated kotlinx serializer, and its `jv1` exists with a different
+  constructor. That is why the guards check the exact *constructor*, not just that
+  the class exists — a class-existence check passes in both cases and fails at
+  runtime instead.
+- The Physical vibrator has a same-shaped **sibling** (the phone vibrator) that
+  also declares `f()V` and `g(II)V` and also masks with `0xffff`. Matching on
+  methods alone would route controller rumble to the phone. They are separated by
+  the constructor: Physical takes a device descriptor, the sibling takes an
+  `Activity`.
 
 To restore dual-motor after a plugin update: re-run
 `apply_plugin_rumble_patches.py` and `build_plugin_shadow_dex.py` against the new
@@ -615,11 +645,15 @@ scripts/
   — PC engine plugin (6.1.1+), see "PC engine plugin" above —
   apply_plugin_rumble_patches.py   dual-motor hooks inside a decompiled
                                    plugin tree: GamepadServerManager
-                                   onRumble/g(II)V/f()V + Lxjp/fi3;.
+                                   onRumble/g(II)V/f()V + the Physical
+                                   vibrator class (located by ctor shape,
+                                   NOT by letter — it has a same-shaped
+                                   phone-vibrator sibling).
   apply_plugin_privacy_patches.py  kills the plugin-side telemetry the
                                    base-APK patches can't reach: perf
-                                   summary upload (Lxjp/mv1;) and the
-                                   heartbeat funnel (Lxjp/jg4;->e).
+                                   summary upload and the heartbeat funnel.
+                                   Both located structurally; every letter
+                                   here drifted 101 -> 102.
   build_plugin_shadow_dex.py       assembles ONLY the patched plugin
                                    classes into a standalone shadow dex
                                    (refuses to build without the "# BH"
