@@ -1,7 +1,25 @@
 #!/usr/bin/env python3
 """
 Apply privacy patches to a decompiled GameHub apktool tree. Supports stock
-6.1.1 only.
+6.1.1 and 6.1.2.
+
+6.1.1 -> 6.1.2 needed no new patches, only re-anchoring, and the anchors that
+drifted were converted to structural locators rather than re-pinned:
+
+  * locate_class() finds a class by text the compiler must keep — a Kotlin
+    cast-failure message naming a model FQN, or the endpoint literal itself —
+    instead of by filename. That covers the heartbeat start POST
+    (Lvho; -> Lgio;), getUserPlayTimeList (Lby9; -> Lgy9;), the /events sender
+    (Ll88; -> Lo88;) and the OTA URL assembler (Lej6; -> Lhj6;).
+  * locate_method_containing() finds a method by what it CALLS, because the
+    Firebase and Mob bootstraps in AndroidApp swap letters nearly every release
+    (a() -> b() -> c() -> b()). On 6.1.2 b() is the *Mob* bootstrap, so the old
+    hardcoded Firebase pin would have patched the wrong method rather than
+    failing loudly — which is exactly why this is now derived.
+  * the Mob push-config helper moved dex bucket as well as letter
+    (smali_classes3/jku -> smali/mnu), so it is located by being the one
+    APP-code caller of submitPolicyGrantResult, excluding the vendor SDK's own
+    copies.
 
 6.0.9 -> 6.1.1 is the largest drift this script has absorbed. Beyond the usual
 R8 re-lettering and dex-count change (5 -> 4, so classes moved buckets again):
@@ -127,9 +145,49 @@ import sys
 from pathlib import Path
 
 
+# --- Real base version, read from the tree rather than inferred ------------
+# The structural probes below cannot tell 6.1.1 from 6.1.2: both ship the
+# plugin host activity and the same smali layout. apktool.yml carries the
+# actual versionName, so report that and keep the probes for the *family*
+# decision (plugin-era vs base-APK-engine).
+SUPPORTED_BASES = ("6.1.1", "6.1.2")
+
+
+def apktool_version(root: Path):
+    """versionName from apktool.yml, or None if unreadable."""
+    y = Path(root) / "apktool.yml"
+    if not y.is_file():
+        return None
+    try:
+        m = re.search(r"^\s*versionName:\s*'?([0-9.]+)'?\s*$",
+                      y.read_text(encoding="utf-8", errors="replace"), re.M)
+        return m.group(1) if m else None
+    except OSError:
+        return None
+
+
+def report_version(root: Path, family: str) -> str:
+    """Print the real base version and flag anything we have not been run on."""
+    actual = apktool_version(root)
+    if actual is None:
+        print(f"Detected GameHub base version: {family} (family probe; "
+              f"apktool.yml unreadable)")
+        return family
+    note = "" if actual in SUPPORTED_BASES else "  [UNTESTED on this base]"
+    print(f"Detected GameHub base version: {actual} "
+          f"({family}-family layout){note}")
+    return actual
+
+
+
 # ---------------------------------------------------------------------------
 # Patch primitives
 # ---------------------------------------------------------------------------
+
+def die(msg):
+    print(f"ERROR: {msg}", file=sys.stderr)
+    sys.exit(1)
+
 
 def patch(path, old, new, label):
     """Apply a single text-level smali edit. Fails fast if the anchor is
@@ -157,6 +215,48 @@ def read(path):
         return p.read_text(encoding="utf-8")
     except UnicodeDecodeError:
         return p.read_text(encoding="latin-1")
+
+
+def locate_class(root: Path, needles, method_header, label: str,
+                 exclude=()) -> Path:
+    """Find the one smali file containing every string in `needles` AND the
+    method `method_header`.
+
+    Why not just name the file: R8 re-letters these classes every release
+    (heartbeat start Lvho; on 6.1.1 -> Lgio; on 6.1.2, playtime Lby9; -> Lgy9;),
+    so a hardcoded filename is a re-anchoring chore each base bump. What does NOT
+    move is text the compiler is obliged to keep — a Kotlin cast-failure message
+    naming a model FQN, or the endpoint literal itself. Anchor on that, and
+    require the method signature too so a same-string sibling (the model class,
+    its $serializer) can't be picked by mistake.
+
+    Fails loudly on zero or multiple matches rather than guessing.
+    """
+    if isinstance(needles, str):
+        needles = [needles]
+    hits = []
+    for d in sorted(root.glob("smali*")):
+        if not d.is_dir():
+            continue
+        for f in d.rglob("*.smali"):
+            rel = f.relative_to(root).as_posix()
+            if any(x in rel for x in exclude):
+                continue
+            text = read(f)
+            if all(n in text for n in needles):
+                if method_header is None or method_header in text:
+                    hits.append(f)
+    if not hits:
+        shape = ("" if method_header is None
+                 else f" together with\n  {method_header.strip()}")
+        die(f"{label}: no smali file contains {needles!r}{shape}\n"
+            f"  (the model FQN or the method shape changed — re-anchor.)")
+    if len(hits) > 1:
+        rel = ", ".join(str(h.relative_to(root)) for h in hits)
+        die(f"{label}: anchor is non-unique ({len(hits)} files: {rel}) — "
+            f"refusing to guess.")
+    print(f"    located {hits[0].relative_to(root)} for {label}")
+    return hits[0]
 
 
 # 6.1.1 keeps `.line` debug directives in app code (6.0.7-6.0.9 stripped them),
@@ -649,23 +749,46 @@ def patch_heartbeat(root: Path) -> None:
     corrupt unrelated resolution — same trap 6.0.9 documented for Ln10. We
     stub its CONSUMER (Lvho;->a) instead, which is why that consumer was worth
     tracing through Loe0;->a rather than pattern-matching on the URL string."""
-    # vho.a — the heartbeat/game/start POST.
-    prepend_to_method(
-        root / "smali_classes3/vho.smali",
+    # The heartbeat/game/start POST — Lvho; on 6.1.1, Lgio; on 6.1.2. Located by
+    # the Kotlin cast-failure message, which the compiler emits with the model's
+    # real FQN even though the enclosing class is a letter. Its two siblings that
+    # carry the same string (the HeartbeatStartCheckData data class and its
+    # $serializer) are excluded by requiring the method signature.
+    start_header = (
         ".method public final a(Ljava/lang/String;"
-        "Lkotlin/coroutines/jvm/internal/ContinuationImpl;)Ljava/lang/Object;\n",
-        HEARTBEAT_UNIT_PREPEND,
-        "vho.a: stub heartbeat/game/start POST",
+        "Lkotlin/coroutines/jvm/internal/ContinuationImpl;)Ljava/lang/Object;\n"
     )
-    # by9.e — getUserPlayTimeList. Returns the Either success wrapper around an
+    prepend_to_method(
+        locate_class(
+            root,
+            "null cannot be cast to non-null type "
+            "com.xiaoji.egggame.core.network.model.BaseResult<"
+            "com.xiaoji.egggame.launcher.interceptor.HeartbeatStartCheckData>",
+            start_header,
+            "heartbeat/game/start POST",
+        ),
+        start_header,
+        HEARTBEAT_UNIT_PREPEND,
+        "stub heartbeat/game/start POST",
+    )
+    # getUserPlayTimeList — Lby9; on 6.1.1, Lgy9; on 6.1.2; located by the
+    # endpoint literal it holds. Returns the Either success wrapper around an
     # empty ArrayList so the UI iterator runs zero passes instead of crashing
     # (a bare Unit here would ClassCastException in the caller).
-    prepend_to_method(
-        root / "smali_classes3/by9.smali",
+    playtime_header = (
         ".method public final e("
-        "Lkotlin/coroutines/jvm/internal/ContinuationImpl;)Ljava/lang/Object;\n",
+        "Lkotlin/coroutines/jvm/internal/ContinuationImpl;)Ljava/lang/Object;\n"
+    )
+    prepend_to_method(
+        locate_class(
+            root,
+            "heartbeat/game/getUserPlayTimeList",
+            playtime_header,
+            "heartbeat/game/getUserPlayTimeList",
+        ),
+        playtime_header,
         PLAYTIME_EMPTY_PREPEND,
-        "by9.e: stub heartbeat/game/getUserPlayTimeList",
+        "stub heartbeat/game/getUserPlayTimeList",
     )
 
 
@@ -696,12 +819,22 @@ def patch_analytics_events(root: Path) -> None:
     It is killed plugin-side by apply_plugin_privacy_patches.py, which stubs the
     uploader Lxjp/mv1;->c and ships it through the shadow dex (see
     SHADOW_CLASSES in build_plugin_shadow_dex.py) — not by this script."""
-    prepend_to_method(
-        root / "smali_classes3/l88.smali",
+    events_header = (
         ".method public final a(Ljava/util/Collection;"
-        "Lkotlin/coroutines/jvm/internal/ContinuationImpl;)Ljava/lang/Object;\n",
+        "Lkotlin/coroutines/jvm/internal/ContinuationImpl;)Ljava/lang/Object;\n"
+    )
+    prepend_to_method(
+        # Ll88; on 6.1.1, Lo88; on 6.1.2 — located by the endpoint literal it
+        # holds rather than the letter.
+        locate_class(
+            root,
+            "https://statistic-gamehub-api.vgabc.com/events",
+            events_header,
+            "statistic-gamehub-api/events POST",
+        ),
+        events_header,
         EVENTS_SUCCESS_PREPEND,
-        "l88.a: stub statistic-gamehub-api/events",
+        "stub statistic-gamehub-api/events",
     )
 
 
@@ -726,29 +859,32 @@ def patch_ota_url(root: Path) -> None:
     """Overwrite the assembled OTA firmware-update URL with loopback so the
     HTTP client fails with connection-refused.
 
-    The URL is not a single literal: Lej6;->d assembles it from "https://" + a
+    The URL is not a single literal: the method assembles it from "https://" + a
     branch-selected host (www.xiaoji.com / ota-test.xiaoji.com) + "/" +
     "firmware/update/x1". Overwriting the register that holds the FINAL
     assembled string catches both host branches with one injection, mirroring
     the 6.0.4 'overwrite the URL register' semantics.
 
-    (6.0.9: Lmw4;->d via Llu2;->q, 3 args, result in p2.)"""
-    p = root / "smali_classes3/ej6.smali"
-    if not p.is_file():
-        print("ERROR: smali_classes3/ej6.smali not found (OTA URL)",
-              file=sys.stderr)
-        sys.exit(1)
+    The class is a letter that drifts (6.0.9 Lmw4;->d via Llu2;->q with 3 args
+    and the result in p2; 6.1.1 Lej6;->d; 6.1.2 Lhj6;->d), so it is located by a
+    Kotlin cast-failure message naming the kept FQN GameFirmwareData — the
+    firmware channel's own model — rather than by filename."""
+    p = locate_class(
+        root,
+        "null cannot be cast to non-null type "
+        "com.xiaoji.egggame.core.network.model.BaseFirmwareResult<"
+        "kotlin.collections.List<"
+        "com.xiaoji.egggame.core.device.entity.GameFirmwareData>>",
+        OTA_METHOD_HEADER,
+        "OTA firmware-update URL",
+    )
     src = read(p)
-    if OTA_METHOD_HEADER not in src:
-        print("ERROR: OTA method Lej6;->d not found — re-anchor.",
-              file=sys.stderr)
-        sys.exit(1)
     start = src.index(OTA_METHOD_HEADER)
     end = src.find("\n.end method", start)
     body = src[start:end]
     matches = list(OTA_CONCAT_RE.finditer(body))
     if len(matches) != 1:
-        print(f"ERROR: expected exactly 1 four-arg URL joiner inside Lej6;->d, "
+        print(f"ERROR: expected exactly 1 four-arg URL joiner inside the OTA method, "
               f"found {len(matches)} — refusing to guess which register holds "
               f"the assembled OTA URL.", file=sys.stderr)
         sys.exit(1)
@@ -761,13 +897,51 @@ def patch_ota_url(root: Path) -> None:
         f'    const-string {reg}, "http://127.0.0.1"\n'
     )
     if 'const-string %s, "http://127.0.0.1"' % reg in body:
-        print("OK: ej6.d OTA URL already overwritten")
+        print("OK: OTA URL already overwritten")
         return
     abs_pos = start + m.end()
     with open(p, "w", encoding="utf-8", newline="") as f:
         f.write(src[:abs_pos] + inject + src[abs_pos:])
-    print(f"OK: ej6.d: overwrite assembled OTA URL register {reg} with "
+    print(f"OK: overwrite assembled OTA URL register {reg} with "
           f"http://127.0.0.1")
+
+
+METHOD_HEADER_RE = re.compile(r"^\.method[^\n]*\n", re.M)
+
+
+def locate_method_containing(path, callee: str, label: str) -> str:
+    """Return the header line of the one method in `path` that references
+    `callee`.
+
+    R8 renames these bootstrap methods on nearly every release — the Firebase
+    and Mob initialisers in AndroidApp went a() -> b() -> c() and back to b()
+    across 6.0.9/6.1.1/6.1.2 — while the SDK entry points they call keep their
+    real com.mob.* / com.google.* names. So locate the method by what it calls
+    instead of by its letter, and let the caller anchor on the returned header.
+
+    Fails loudly if zero or several methods reference it, since 'which of these
+    is the bootstrap' is exactly the guess that must not be made silently.
+    """
+    p = Path(path)
+    if not p.is_file():
+        die(f"{path} not found for: {label}")
+    src = read(p)
+    owners = []
+    for m in METHOD_HEADER_RE.finditer(src):
+        end = src.find("\n.end method", m.end())
+        if end < 0:
+            continue
+        if callee in src[m.end():end]:
+            owners.append(m.group(0))
+    if not owners:
+        die(f"{label}: no method in {Path(path).name} references {callee} — "
+            f"re-anchor (the SDK call site moved or was removed upstream).")
+    if len(owners) > 1:
+        die(f"{label}: {len(owners)} methods in {Path(path).name} reference "
+            f"{callee} — refusing to guess:\n"
+            + "\n".join(f"  {o.strip()}" for o in owners))
+    print(f"    {label}: found in {owners[0].strip()}")
+    return owners[0]
 
 
 def remove_invoke_in_method(path, header: str, callee: str, label: str) -> None:
@@ -830,36 +1004,61 @@ def patch_mob_bytecode(root: Path) -> None:
     either no-op or throw an NPE that the existing try/catchall around
     restartPush already catches — surgically removing them would break
     the try-label structure."""
-    # AndroidApp.c() — first policy-grant invoke (6.0.9 AndroidApp.b(),
-    # 6.0.4 BaseAndroidApp.a()). The `const/4 v2, 0x1` that sets up the call's
+    # AndroidApp's Mob bootstrap — c() on 6.1.1, b() on 6.1.2, b() on 6.0.9,
+    # BaseAndroidApp.a() on 6.0.4. Located by the SDK call it makes rather than
+    # by the letter, since both invokes we strip live in the same method.
+    mob_bootstrap = locate_method_containing(
+        root / ANDROID_APP_SMALI,
+        "Lcom/mob/MobSDK;->submitPolicyGrantResult(Z)V",
+        "Mob bootstrap",
+    )
+
+    # First policy-grant invoke. The `const/4 v2, 0x1` that sets up the call's
     # arg stays — later code in the method uses it too.
     remove_invoke_in_method(
         root / ANDROID_APP_SMALI,
-        ".method public final c()V\n",
+        mob_bootstrap,
         "Lcom/mob/MobSDK;->submitPolicyGrantResult(Z)V",
-        "AndroidApp.c: strip MobSDK.submitPolicyGrantResult",
+        "strip MobSDK.submitPolicyGrantResult",
     )
 
-    # AndroidApp.c() — addPushReceiverInMain invoke, interior to a
+    # addPushReceiverInMain invoke, same method, interior to a
     # :try_start_0 .. :try_end_0/:catchall_0 block. Void-returning, no
     # move-result, and strictly interior (the try-boundary labels are not
     # adjacent), so removal is label-safe.
     remove_invoke_in_method(
         root / ANDROID_APP_SMALI,
-        ".method public final c()V\n",
+        mob_bootstrap,
         "Lcom/mob/pushsdk/MobPush;->addPushReceiverInMain",
-        "AndroidApp.c: strip MobPush.addPushReceiverInMain",
+        "strip MobPush.addPushReceiverInMain",
     )
 
-    # jku.E(Context)V — second policy-grant invoke (6.0.9 Ldy8;->D,
-    # 6.0.4 nt5.N). In a non-try branch, so removal is label-safe. The
-    # downstream setClickNotificationToLaunchMainActivity call and the
-    # const/4 that feeds it stay (see the docstring above).
-    remove_invoke_in_method(
-        root / "smali_classes3/jku.smali",
-        ".method public static E(Landroid/content/Context;)V\n",
+    # The obfuscated push-config helper holds a second policy-grant invoke
+    # (6.0.4 nt5.N, 6.0.9 Ldy8;->D, 6.1.1 Ljku;->E, 6.1.2 Lmnu;->B — it also
+    # changed dex bucket, smali_classes3 -> smali). In a non-try branch, so
+    # removal is label-safe. The downstream
+    # setClickNotificationToLaunchMainActivity call and the const/4 that feeds it
+    # stay (see the docstring above).
+    #
+    # Located as: the one APP-code class that calls submitPolicyGrantResult,
+    # excluding the vendor SDK's own copies (com/mob/**, cn/fly/**) and
+    # AndroidApp, which is the other call site handled above.
+    helper = locate_class(
+        root,
         "Lcom/mob/MobSDK;->submitPolicyGrantResult(Z)V",
-        "jku.E: strip MobSDK.submitPolicyGrantResult",
+        None,
+        "Mob push-config helper",
+        exclude=("com/mob/", "cn/fly/", "com/xiaoji/egggame/AndroidApp.smali"),
+    )
+    remove_invoke_in_method(
+        helper,
+        locate_method_containing(
+            helper,
+            "Lcom/mob/MobSDK;->submitPolicyGrantResult(Z)V",
+            "Mob push-config helper method",
+        ),
+        "Lcom/mob/MobSDK;->submitPolicyGrantResult(Z)V",
+        "strip MobSDK.submitPolicyGrantResult (push-config helper)",
     )
 
 
@@ -885,30 +1084,34 @@ def patch_firebase_autoinit(root: Path) -> None:
     hardcoded — the literal is the SDK's own preference key and is stable."""
     p = root / ANDROID_APP_SMALI
     src = read(p)
-    header = ".method public final b()V\n"
-    if header not in src:
-        print("ERROR: AndroidApp.b()V not found (Firebase auto-init kill)",
-              file=sys.stderr)
-        sys.exit(1)
+    # The bootstrap method's own name is an R8 letter that moves every release
+    # (6.0.9 a(), 6.1.1 b(), 6.1.2 a() — and 6.1.2's b() is the *Mob* bootstrap,
+    # so pinning a letter here risks patching the wrong method rather than
+    # failing). Locate it by the SDK preference key it writes.
+    header = locate_method_containing(
+        p,
+        '"firebase_data_collection_default_enabled"',
+        "Firebase bootstrap",
+    )
     start = src.index(header)
     end = src.find("\n.end method", start)
     body = src[start:end]
 
     if "# BH: privacy patch — Firebase/Crashlytics auto-init kill" in body:
-        print("OK: AndroidApp.b: Firebase auto-init already killed")
+        print("OK: Firebase auto-init already killed")
         return
 
     key_pos = body.find('"firebase_data_collection_default_enabled"')
     if key_pos < 0:
         print("ERROR: firebase_data_collection_default_enabled literal not "
-              "found in AndroidApp.b()V — re-anchor.", file=sys.stderr)
+              "found in the Firebase bootstrap — re-anchor.", file=sys.stderr)
         sys.exit(1)
     # Last check-cast before the preference write is the state holder.
     cc = [m for m in re.finditer(r"    check-cast p0, (L\w+;)\n", body)
           if m.end() <= key_pos]
     if not cc:
         print("ERROR: no `check-cast p0, L…;` precedes the Firebase preference "
-              "key in AndroidApp.b()V — re-anchor.", file=sys.stderr)
+              "key in the Firebase bootstrap — re-anchor.", file=sys.stderr)
         sys.exit(1)
     m = cc[-1]
     holder = m.group(1)
@@ -930,7 +1133,7 @@ def patch_firebase_autoinit(root: Path) -> None:
     abs_pos = start + mm.end() - len("    monitor-enter p0\n")
     with open(p, "w", encoding="utf-8", newline="") as f:
         f.write(src[:abs_pos] + inject + src[abs_pos:])
-    print(f"OK: AndroidApp.b: kill Firebase/Crashlytics runtime auto-init "
+    print(f"OK: kill Firebase/Crashlytics runtime auto-init "
           f"re-enable [state holder {holder}]")
 
 
@@ -948,7 +1151,7 @@ def main():
         sys.exit(2)
 
     version = detect_version(root)
-    print(f"Detected GameHub base version: {version}")
+    version = report_version(root, version)
     print()
 
     print("=== Manifest ===")

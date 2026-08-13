@@ -10,31 +10,40 @@ It is built on GameHub v6.x and heavily uses the work of
 [@The412Banner](https://github.com/The412Banner) as well as others. It
 also includes my own PC-accurate controller vibration fixes.
 
-> ### ⚠️ 6.1.1 moved the PC engine into a plugin — both rumble halves work, dual-motor is version-pinned
+> ### ⚠️ 6.1.2 status — base APK fully ported; the plugin half needs a new plugin
 >
 > GameHub **6.1.1 moved the PC/Wine engine out of the APK** into a
-> separately-downloaded plugin. That split the vibration work in two, and both
-> halves are working (verified on-device):
+> separately-downloaded plugin, which splits the vibration work in two. GameScrub
+> patches the plugin half **without touching the plugin**, by prepending its own
+> small "shadow" dex to the plugin's `DexClassLoader` path — see
+> [PC engine plugin](#pc-engine-plugin-611).
 >
-> - **Sustained rumble past 1 s** — `winebus.so` did *not* move into the plugin;
->   it is still a downloaded Wine component under `<filesDir>/usr`. Only the
->   trigger moved, and the new one is a base-APK hook. Immune to plugin updates.
-> - **Dual-motor low/high dispatch** — its hooks target `GamepadServerManager`
->   and the Physical vibrator class, which now live in the plugin dex. Rather
->   than patch that dex (and forge the SHA-256 identity record the host
->   re-verifies on every load), GameScrub **prepends its own small dex** to the
->   plugin's `DexClassLoader` path, so our copies of those classes win while the
->   plugin's `base.apk` stays byte-identical.
+> **6.1.2 (versionCode 124) bumped the plugin contract.** The host now
+> hard-requires plugin `schemaVersion == 3` (6.1.1 required 2), so the
+> schemaVersion-2 plugin our shadow was cut against (`versionCode` 101) is no
+> longer valid. Where that leaves each feature:
 >
-> The one caveat: because our shadow classes are copies of a **specific** plugin
-> build, dual-motor is pinned to plugin `versionCode`
-> **101** (`EXPECTED_PLUGIN_VERSION_CODE`). If the plugin updates, dual-motor
-> switches itself off — loudly, via Toast, a settings banner, and logcat — while
-> sustained rumble and the engine keep working. Degraded, never broken.
+> | | 6.1.2 |
+> |---|---|
+> | Privacy (base APK): Firebase, GMS Measurement, Mob Push, OEM push fleet, `/events`, heartbeat/playtime, OTA | **working** |
+> | Sustained rumble past 1 s | **working** — `winebus.so` stayed in the Wine component tree, so this never depended on the plugin |
+> | Layout export + import | **working** |
+> | "Online Update" badges | **working** |
+> | Dual-motor low/high dispatch | **off** until a schemaVersion-3 plugin is pulled |
+> | Plugin-side privacy: heartbeat (Steam ID64 every 30 s) + device-perf telemetry | **off — those trackers are live again** |
 >
-> See [PC engine plugin](#pc-engine-plugin-611) for the mechanism.
-> Everything else works on 6.1.1 too: privacy, layout export *and* import, and
-> the "Online Update" badge fix.
+> That last row is the one to care about, and it is easy to miss: the dual-motor
+> hooks and the plugin-side privacy stubs ride the **same** shadow dex, so a
+> version gate that refuses the shadow disables both. The refusal itself is
+> deliberate and loud (Toast + settings banner + logcat) rather than silent —
+> see [What happens when the plugin updates](#what-happens-when-the-plugin-updates).
+>
+> **To finish the port:** pull
+> `<filesDir>/plugins/com.xiaoji.egggame.plugin.pcengine/base.apk` from a device
+> running stock 6.1.2, upload it as a `pcengine-plugin-<versionCode>` release
+> asset, re-run the two plugin patch scripts + `build_plugin_shadow_dex.py`, and
+> raise `EXPECTED_PLUGIN_VERSION_CODE` in
+> [BhPluginShadow](extension/BhPluginShadow.java) to match.
 
 What you get over stock GameHub:
 
@@ -47,7 +56,9 @@ What you get over stock GameHub:
   (6.1.1 shrank part of this surface upstream: `heartbeat/game/update` and
   `heartbeat/game/end` no longer exist.) It also kills a channel that only
   appears in 6.1.1 — see below.
-- **Device-performance telemetry kill (6.1.1).** The perf channel 6.0.9 stubbed
+- **Device-performance telemetry kill.** *(off on 6.1.2 pending a
+  schemaVersion-3 plugin — this stub ships in the shadow dex too, so the
+  channel is live again until then.)* The perf channel 6.0.9 stubbed
   in the base APK did not go away; it moved into the downloaded PC-engine plugin
   and got a successor. On stock 6.1.1, every game session assigns a UUID and
   samples **fps, power draw, RAM (MB/percent/total) and GPU percent every ~10 s**,
@@ -58,7 +69,8 @@ What you get over stock GameHub:
   (`Lxjp/mv1;->c`) through the same shadow dex used for dual-motor, so the
   plugin APK is never modified. Sampling and local summary storage still run;
   nothing is sent.
-- **Dual-motor low/high dispatch.** *(offline on 6.1.1 — see the note above.)*
+- **Dual-motor low/high dispatch.** *(off on 6.1.2 pending a schemaVersion-3
+  plugin — see the note above; worked on 6.1.1.)*
   Wine games calling `XInputSetState(slot, low, high)` get the two motors
   driven independently via Android `CombinedVibration.startParallel` on
   ≥ 2-motor controllers. Stock GameHub blends both motors into a single haptic
@@ -75,7 +87,8 @@ What you get over stock GameHub:
   [scripts/patch_winebus_rumble_duration.py](scripts/patch_winebus_rumble_duration.py)
   applies the same patch to extracted components for offline use.
 - **Instant release** when the game stops rumble — no phantom-suppression
-  timer extending the motor past the actual stop call. *(offline on 6.1.1.)*
+  timer extending the motor past the actual stop call. *(rides the same shadow
+  dex as dual-motor, so also off on 6.1.2 for now.)*
 - **Local export/import of on-screen control layouts.** The on-screen-controls
   "Share" / "Apply share code" flow is rerouted from XiaoJi's cloud to portable
   local `.gtheme` files via the Storage Access Framework — no cloud account, no
@@ -98,9 +111,9 @@ What you get over stock GameHub:
   is connected. Live home/library badges refresh instantly; the game-detail
   dot is correct on the next menu open. No restart.
 
-### PC engine plugin (6.1.1)
+### PC engine plugin (6.1.1+)
 
-GameHub 6.1.1 (versionCode 123, targetSdk 36, 4 stock dex) extracted the whole
+GameHub 6.1.1 (versionCode 123) extracted the whole
 PC/Wine engine from the base APK into a plugin that the app downloads at
 runtime. Verified against the decompiled APK:
 
@@ -438,11 +451,11 @@ if any anchor is missing or non-unique.
 ## Build
 
 CI workflow: `.github/workflows/build.yml` — triggers on `workflow_dispatch`
-or push of a `v*-6.1.1*` tag.
+or push of a `v*-6.1.2*` tag.
 
 One-time setup: upload the original GameHub APK as an asset on a release
-tagged `base-apk-6.1.1` in this repo (e.g.
-`GameHub_6.1.1_bdbf223c9f36bbd862fa39c6a2841a60.apk`). The workflow
+tagged `base-apk-6.1.2` in this repo (e.g.
+`GameHub_6.1.2_9fcd54341d3dbf0c07fac4048496eb79.apk`). The workflow
 `gh release download`s from there.
 
 `scripts/apply_vibration_patches.py` **is** run on 6.1.1, but does less than it

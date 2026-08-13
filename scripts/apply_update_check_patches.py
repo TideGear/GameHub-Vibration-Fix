@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Wire the background Steam update-badge checker into GameHub 6.1.1.
+Wire the background Steam update-badge checker into GameHub 6.1.1/6.1.2.
 
 Stock GameHub only runs the Steam "Online Update" check on a couple of lazy
 paths (an event handler Lp1a;->o dispatching Lvi0;->o(appId, flag) + a few
@@ -29,22 +29,62 @@ Injection
 ---------
   Lcom/xiaoji/egggame/AndroidApp;->onCreate()V   (Application subclass)
 
-We anchor on the `sput-object v0, Lrs1;->s:...AndroidApp;` line that stock
+We anchor on the `sput-object vN, L<holder>;->f:...AndroidApp;` line that stock
 onCreate runs immediately after super.onCreate() — at that point super has
-run and v0 holds the Application (a Context). We insert our start(Context)
-call right after it. onCreate is .locals 71, so there is no register
-pressure and no .locals bump. Fails loudly if the anchor is missing or the
-Application class moved (base bump) so a broken build never ships silently.
+run and that register holds the Application (a Context). We insert our
+start(Context) call right after it. onCreate is .locals 71, so there is no
+register pressure and no .locals bump. Fails loudly if the anchor is missing or
+the Application class moved (base bump) so a broken build never ships silently.
 
-Note there are TWO `sput-object v0, L<letter>;->...:AndroidApp;` lines in
-6.1.1's onCreate (Lrs1;->s and Lp44;->a). We pin the first one — the one
-directly after super.onCreate() — by full text, and assert it is unique.
+The holder class and field are R8 letters and drift every release (6.1.1
+Lrs1;->s / Lp44;->a, 6.1.2 Lss1;->s / Lr44;->a), so they are wildcarded — what
+is actually stable is the *shape*: a static store of the AndroidApp instance,
+whose type name R8 keeps. There are TWO such lines in onCreate; we pin the
+FIRST, which is the one directly after super.onCreate(), and assert the count
+matches what we have seen so a third one appearing forces a look rather than a
+silent shift.
 
 The BhSteamUpdateChecker Java is compiled + dex'd in the same workflow step
 as the other extension/ classes.
 """
+import re
 import sys
 from pathlib import Path
+
+
+# --- Real base version, read from the tree rather than inferred ------------
+# The structural probes below cannot tell 6.1.1 from 6.1.2: both ship the
+# plugin host activity and the same smali layout. apktool.yml carries the
+# actual versionName, so report that and keep the probes for the *family*
+# decision (plugin-era vs base-APK-engine).
+SUPPORTED_BASES = ("6.1.1", "6.1.2")
+
+
+def apktool_version(root: Path):
+    """versionName from apktool.yml, or None if unreadable."""
+    y = Path(root) / "apktool.yml"
+    if not y.is_file():
+        return None
+    try:
+        m = re.search(r"^\s*versionName:\s*'?([0-9.]+)'?\s*$",
+                      y.read_text(encoding="utf-8", errors="replace"), re.M)
+        return m.group(1) if m else None
+    except OSError:
+        return None
+
+
+def report_version(root: Path, family: str) -> str:
+    """Print the real base version and flag anything we have not been run on."""
+    actual = apktool_version(root)
+    if actual is None:
+        print(f"Detected GameHub base version: {family} (family probe; "
+              f"apktool.yml unreadable)")
+        return family
+    note = "" if actual in SUPPORTED_BASES else "  [UNTESTED on this base]"
+    print(f"Detected GameHub base version: {actual} "
+          f"({family}-family layout){note}")
+    return actual
+
 
 
 def read(path: Path) -> str:
@@ -94,18 +134,27 @@ def detect_version(root: Path) -> str:
 
 ANDROID_APP_SMALI = "smali_classes2/com/xiaoji/egggame/AndroidApp.smali"
 
-# The line stock onCreate() runs right after super.onCreate(); v0 = Application.
-ONCREATE_ANCHOR = (
-    "    sput-object v0, Lrs1;->s:Lcom/xiaoji/egggame/AndroidApp;\n"
+# The line stock onCreate() runs right after super.onCreate(); the register it
+# stores is the Application. Holder class + field name are R8 letters (wildcarded,
+# see the module docstring); the AndroidApp type name is what anchors us.
+ONCREATE_ANCHOR_RE = re.compile(
+    r"[ \t]*sput-object (v\d+), L[\w$/]+;->\w+:"
+    r"Lcom/xiaoji/egggame/AndroidApp;\n"
 )
+# How many such stores stock onCreate has had (6.1.1 and 6.1.2 both: 2).
+EXPECTED_APP_STORES = 2
 
-START_CALL = (
-    "\n"
-    "    # BH: start the background Steam update-badge checker (once per\n"
-    "    # process). v0 is the Application (a Context); super.onCreate has run.\n"
-    "    invoke-static {v0}, "
-    "Lcom/xj/winemu/update/BhSteamUpdateChecker;->start(Landroid/content/Context;)V\n"
-)
+def start_call(reg: str) -> str:
+    """Our injected call, using whichever register the anchor stored from."""
+    return (
+        "\n"
+        "    # BH: start the background Steam update-badge checker (once per\n"
+        f"    # process). {reg} is the Application (a Context); super.onCreate has\n"
+        "    # run. start() is itself gated to the main process.\n"
+        f"    invoke-static {{{reg}}}, "
+        "Lcom/xj/winemu/update/BhSteamUpdateChecker;->"
+        "start(Landroid/content/Context;)V\n"
+    )
 
 
 def patch_app_start(root: Path) -> None:
@@ -119,24 +168,31 @@ def patch_app_start(root: Path) -> None:
         print("OK: BhSteamUpdateChecker.start already injected")
         return
 
-    count = src.count(ONCREATE_ANCHOR)
-    if count == 0:
+    hits = list(ONCREATE_ANCHOR_RE.finditer(src))
+    if not hits:
         print(
-            "ERROR: onCreate anchor not found in AndroidApp.smali:\n"
-            f"  {ONCREATE_ANCHOR.strip()}\n"
+            "ERROR: no static store of the AndroidApp instance found in "
+            "AndroidApp.smali:\n"
+            "  sput-object vN, L<holder>;-><field>:Lcom/xiaoji/egggame/AndroidApp;\n"
             "  (Application class or its onCreate layout changed — re-anchor.)",
             file=sys.stderr,
         )
         sys.exit(1)
-    if count != 1:
+    if len(hits) != EXPECTED_APP_STORES:
         print(
-            f"ERROR: onCreate anchor is non-unique ({count} matches) in "
-            "AndroidApp.smali — refusing to guess the injection site.",
+            f"ERROR: expected {EXPECTED_APP_STORES} static AndroidApp stores in "
+            f"onCreate, found {len(hits)}:\n"
+            + "\n".join(f"  {h.group(0).strip()}" for h in hits)
+            + "\n  onCreate's layout changed — confirm which store still follows "
+            "super.onCreate() before shifting this anchor.",
             file=sys.stderr,
         )
         sys.exit(1)
 
-    src = src.replace(ONCREATE_ANCHOR, ONCREATE_ANCHOR + START_CALL, 1)
+    m = hits[0]                      # the one directly after super.onCreate()
+    reg = m.group(1)
+    print(f"    anchored on {m.group(0).strip()}  (register {reg})")
+    src = src[:m.end()] + start_call(reg) + src[m.end():]
     write_lf(p, src)
     print("OK: AndroidApp.onCreate: start BhSteamUpdateChecker")
 
@@ -155,7 +211,7 @@ def main() -> None:
         sys.exit(2)
 
     version = detect_version(root)
-    print(f"Detected GameHub base version: {version}")
+    version = report_version(root, version)
     print()
 
     print("=== Background Steam update-badge checker ===")

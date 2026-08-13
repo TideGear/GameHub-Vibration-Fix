@@ -136,19 +136,29 @@ public final class BhMenuRowClick {
     // 6.1.1 stopped obfuscating the Kotlin function interfaces and the Compose
     // Multiplatform resource classes, so only the three row data classes are
     // R8 letters now:
-    //   Ll2h;(DrawableResource icon, String label, Function1 onClick[, Z])
-    //       game-detail More Menu row      (6.0.9 Luhd;, 6.0.4 Liae;)
-    //   Lizf;(String actionId, DrawableResource icon, String label,
+    //   Lr2h;(DrawableResource icon, String label, Function1 onClick[, Z])
+    //       game-detail More Menu row  (6.1.1 Ll2h;, 6.0.9 Luhd;, 6.0.4 Liae;)
+    //   Lozf;(String actionId, DrawableResource icon, String label,
     //         Function0 onClick)
-    //       library-tile popup row         (6.0.9 Lxoc;, 6.0.4 Lscd;)
-    //   Lovg;(StringResource label, Function0 onClick, int)
-    //       library-list 3-dot popup row   (6.0.9 Lpcd;, 6.0.4 Lz4e;)
+    //       library-tile popup row     (6.1.1 Lizf;, 6.0.9 Lxoc;, 6.0.4 Lscd;)
+    //   Luvg;(StringResource label, Function0 onClick, int)
+    //       library-list 3-dot row     (6.1.1 Lovg;, 6.0.9 Lpcd;, 6.0.4 Lz4e;)
     // If a future R8 map shifts these, each appender logs and no-ops, leaving
     // the stock rows untouched.
+    //
+    // Re-derive by CONSTRUCTOR SHAPE, not by guessing the next letter: each ctor
+    // interleaves the app letter with Compose types R8 cannot rename, so
+    //   grep -rl '^\.method public.*constructor <init>(\
+    //       Lorg/jetbrains/compose/resources/DrawableResource;Ljava/lang/String;\
+    //       Lkotlin/jvm/functions/Function1;'
+    // pins the More Menu row outright. The tile-popup shape matches three
+    // classes, so intersect with the one the tile builder actually references
+    // (13 refs vs 0 on 6.1.2). Note the 3-dot row's ctor is `public synthetic`,
+    // so a pattern requiring `public constructor` silently misses it.
     // ─────────────────────────────────────────────────────────────────────
-    private static final String ROW_MORE_MENU  = "l2h";
-    private static final String ROW_TILE_POPUP = "izf";
-    private static final String ROW_THREE_DOT  = "ovg";
+    private static final String ROW_MORE_MENU  = "r2h";
+    private static final String ROW_TILE_POPUP = "ozf";
+    private static final String ROW_THREE_DOT  = "uvg";
 
     private static final String FUNCTION0 = "kotlin.jvm.functions.Function0";
     private static final String FUNCTION1 = "kotlin.jvm.functions.Function1";
@@ -157,8 +167,10 @@ public final class BhMenuRowClick {
     private static final String STRING_RESOURCE =
             "org.jetbrains.compose.resources.StringResource";
     // Abstract base of every CMP resource descriptor; still an R8 letter
-    // because it is CMP-internal (6.0.9 "o4h", 6.0.4 "tdi").
-    private static final String RESOURCE_DESCRIPTOR_BASE = "ull";
+    // because it is CMP-internal (6.1.1 "ull", 6.0.9 "o4h", 6.0.4 "tdi").
+    // Re-derive by reading StringResource's superclass out of the tree:
+    //   grep '^\.super' smali*/org/jetbrains/compose/resources/StringResource.smali
+    private static final String RESOURCE_DESCRIPTOR_BASE = "aml";
 
     private static final String ROW_LABEL = "PC Vibration Settings";
 

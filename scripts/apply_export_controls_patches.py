@@ -4,7 +4,7 @@ VJoy on-screen-controls export/import to/from local files.
 
 Replaces GameHub's cloud-only "share-by-code" flow for on-screen controller
 layouts with portable local `.gtheme` files. No cloud account, no HTTP.
-Supports stock 6.1.1 only.
+Supports stock 6.1.1 and 6.1.2 (anchors are resolved structurally; see below).
 
 The four bytecode hooks are URL-fragment-anchored (not R8-letter-anchored), and
 that paid off again on 6.1.1: they re-discovered their methods with NO changes
@@ -90,6 +90,41 @@ import base64
 import re
 import sys
 from pathlib import Path
+
+
+# --- Real base version, read from the tree rather than inferred ------------
+# The structural probes below cannot tell 6.1.1 from 6.1.2: both ship the
+# plugin host activity and the same smali layout. apktool.yml carries the
+# actual versionName, so report that and keep the probes for the *family*
+# decision (plugin-era vs base-APK-engine).
+SUPPORTED_BASES = ("6.1.1", "6.1.2")
+
+
+def apktool_version(root: Path):
+    """versionName from apktool.yml, or None if unreadable."""
+    y = Path(root) / "apktool.yml"
+    if not y.is_file():
+        return None
+    try:
+        m = re.search(r"^\s*versionName:\s*'?([0-9.]+)'?\s*$",
+                      y.read_text(encoding="utf-8", errors="replace"), re.M)
+        return m.group(1) if m else None
+    except OSError:
+        return None
+
+
+def report_version(root: Path, family: str) -> str:
+    """Print the real base version and flag anything we have not been run on."""
+    actual = apktool_version(root)
+    if actual is None:
+        print(f"Detected GameHub base version: {family} (family probe; "
+              f"apktool.yml unreadable)")
+        return family
+    note = "" if actual in SUPPORTED_BASES else "  [UNTESTED on this base]"
+    print(f"Detected GameHub base version: {actual} "
+          f"({family}-family layout){note}")
+    return actual
+
 
 
 # ---------------------------------------------------------------------------
@@ -745,7 +780,7 @@ def main():
         die(f"{root} is not a directory")
 
     version = detect_version(root)
-    print(f"Detected GameHub base version: {version}")
+    version = report_version(root, version)
     print()
 
     print("=== Manifest (BhSafProxyActivity) ===")

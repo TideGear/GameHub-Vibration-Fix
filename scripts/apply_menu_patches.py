@@ -2,7 +2,8 @@
 """
 Inject the "PC Vibration Settings" row into GameHub's three per-game menu
 surfaces, plus the supporting per-game gameId capture and Compose-resource
-label resolver. Supports stock 6.1.1 only.
+label resolver. Supports stock 6.1.1 and 6.1.2 (surfaces are resolved by literal
++ signature shape, so R8 re-lettering no longer requires edits here).
 
 Port of bannerhub-revanced's VibrationManifestPatch + VibrationMenuLabelPatch
 + MenuGameIdCapturePatch + VibrationMenuRowPatch — translated from ReVanced
@@ -97,6 +98,41 @@ import base64
 import re
 import sys
 from pathlib import Path
+
+
+# --- Real base version, read from the tree rather than inferred ------------
+# The structural probes below cannot tell 6.1.1 from 6.1.2: both ship the
+# plugin host activity and the same smali layout. apktool.yml carries the
+# actual versionName, so report that and keep the probes for the *family*
+# decision (plugin-era vs base-APK-engine).
+SUPPORTED_BASES = ("6.1.1", "6.1.2")
+
+
+def apktool_version(root: Path):
+    """versionName from apktool.yml, or None if unreadable."""
+    y = Path(root) / "apktool.yml"
+    if not y.is_file():
+        return None
+    try:
+        m = re.search(r"^\s*versionName:\s*'?([0-9.]+)'?\s*$",
+                      y.read_text(encoding="utf-8", errors="replace"), re.M)
+        return m.group(1) if m else None
+    except OSError:
+        return None
+
+
+def report_version(root: Path, family: str) -> str:
+    """Print the real base version and flag anything we have not been run on."""
+    actual = apktool_version(root)
+    if actual is None:
+        print(f"Detected GameHub base version: {family} (family probe; "
+              f"apktool.yml unreadable)")
+        return family
+    note = "" if actual in SUPPORTED_BASES else "  [UNTESTED on this base]"
+    print(f"Detected GameHub base version: {actual} "
+          f"({family}-family layout){note}")
+    return actual
+
 
 
 # ---------------------------------------------------------------------------
@@ -346,23 +382,104 @@ CAPTURE_GAME_ID = (
 )
 
 
-# --- 6.1.1 menu-surface coordinates, shared by the capture and row passes. ---
-MORE_MENU_FILE = "smali_classes3/bk9.smali"
-MORE_MENU_HEADER = (
-    ".method public static final a(Lfh9;ILkotlin/jvm/functions/Function0;Z"
-    "Lp1a;Landroidx/compose/runtime/Composer;I)V\n"
-)
-TILE_POPUP_FILE = "smali_classes3/e1g.smali"
-TILE_POPUP_HEADER = (
-    ".method public static final f(Lf1g;Lkotlin/jvm/functions/Function1;"
-    "Lkotlin/jvm/functions/Function0;ZLandroidx/compose/ui/Modifier;"
-    "Landroidx/compose/runtime/Composer;I)V\n"
-)
-THREE_DOT_FILE = "smali_classes4/fel.smali"
-THREE_DOT_HEADER = (
-    ".method public static final o(Lfme;ZLoof;Loof;Lbpa;Lbpa;Lwff;Lu40;"
-    "Lnof;Loof;)Ljava/util/List;\n"
-)
+# --- Menu-surface coordinates, shared by the capture and row passes. -------
+#
+# These are Compose builders whose class name, method name AND parameter types
+# are all R8 letters, and every one of them drifted 6.1.1 -> 6.1.2:
+#
+#   More Menu    Lbk9;->a(Lfh9;I…Lp1a;…)   ->  Lgk9;->a(Ljh9;I…Lu1a;…)
+#   tile popup   Le1g;->f(Lf1g;…)          ->  Lk1g;->f(Ll1g;…)
+#   three-dot    Lfel;->o(Lfme;Z…)         ->  Liml;->i(Llme;Z…)   (name too)
+#
+# So nothing here can be pinned by name. What IS stable is the shape: each
+# signature interleaves its letters with framework types the compiler cannot
+# rename (Composer, Modifier, Function0/1, java.util.List), and two of the three
+# classes hold a distinctive analytics/action-id string literal. Resolve on both
+# and the letters stop mattering.
+#
+# The three-dot builder has no usable literal — it lives in a huge merged class
+# (AES, DESUtils, protobuf helpers) — but its 10-parameter
+# `(letter, Z, letter x8) -> java.util.List` shape is unique across every dex in
+# both 6.1.1 and 6.1.2, so shape alone pins it.
+MENU_SURFACES = {
+    "more_menu": {
+        "needles": ['"game_detail_more_menu"'],
+        "sig": re.compile(
+            r"^\.method public static final \w+\("
+            r"L[\w$/]+;ILkotlin/jvm/functions/Function0;ZL[\w$/]+;"
+            r"Landroidx/compose/runtime/Composer;I\)V$", re.M),
+        "label": "game-details More Menu",
+    },
+    "tile_popup": {
+        "needles": ['"local_detail_menu_settings"'],
+        "sig": re.compile(
+            r"^\.method public static final \w+\("
+            r"L[\w$/]+;Lkotlin/jvm/functions/Function1;"
+            r"Lkotlin/jvm/functions/Function0;ZLandroidx/compose/ui/Modifier;"
+            r"Landroidx/compose/runtime/Composer;I\)V$", re.M),
+        "label": "home tile long-press popup",
+    },
+    "three_dot": {
+        "needles": [],
+        "sig": re.compile(
+            r"^\.method public static final \w+\("
+            r"L[\w$/]+;Z(?:L[\w$/]+;){8}\)Ljava/util/List;$", re.M),
+        "label": "library three-dot menu",
+    },
+}
+
+# Filled in by resolve_menu_surfaces() before any pass runs.
+MORE_MENU_FILE = MORE_MENU_HEADER = None
+TILE_POPUP_FILE = TILE_POPUP_HEADER = None
+THREE_DOT_FILE = THREE_DOT_HEADER = None
+
+
+def resolve_menu_surfaces(root: Path) -> None:
+    """Find each menu builder by literal + signature shape, and publish the
+    results into the module-level coordinates the passes below consume.
+
+    Fails loudly per surface on zero or multiple matches — with all three
+    surfaces sharing one row-injection body, quietly patching the wrong builder
+    would be worse than not building at all.
+    """
+    global MORE_MENU_FILE, MORE_MENU_HEADER
+    global TILE_POPUP_FILE, TILE_POPUP_HEADER
+    global THREE_DOT_FILE, THREE_DOT_HEADER
+
+    resolved = {}
+    for key, spec in MENU_SURFACES.items():
+        hits = []
+        for d in sorted(root.glob("smali*")):
+            if not d.is_dir():
+                continue
+            for f in d.rglob("*.smali"):
+                text = read(f)
+                if not all(n in text for n in spec["needles"]):
+                    continue
+                for m in spec["sig"].finditer(text):
+                    hits.append((f, m.group(0)))
+        if not hits:
+            print(f"ERROR: {spec['label']}: no method matching the expected "
+                  f"signature shape"
+                  + (f" in a class containing {spec['needles']}"
+                     if spec["needles"] else "")
+                  + " — re-anchor (the builder's parameter list changed, not "
+                    "just its letters).", file=sys.stderr)
+            sys.exit(1)
+        if len(hits) > 1:
+            print(f"ERROR: {spec['label']}: signature shape is non-unique "
+                  f"({len(hits)} matches) — refusing to guess:\n"
+                  + "\n".join(f"  {f.relative_to(root).as_posix()}: {sig}"
+                              for f, sig in hits), file=sys.stderr)
+            sys.exit(1)
+        f, sig = hits[0]
+        rel = f.relative_to(root).as_posix()
+        resolved[key] = (rel, sig + "\n")
+        print(f"    {spec['label']}: {rel}  {sig.split('final ', 1)[1]}")
+
+    MORE_MENU_FILE, MORE_MENU_HEADER = resolved["more_menu"]
+    TILE_POPUP_FILE, TILE_POPUP_HEADER = resolved["tile_popup"]
+    THREE_DOT_FILE, THREE_DOT_HEADER = resolved["three_dot"]
 
 
 def patch_menu_gameid_capture(root: Path) -> None:
@@ -596,7 +713,11 @@ def main():
         sys.exit(2)
 
     version = detect_version(root)
-    print(f"Detected GameHub base version: {version}")
+    version = report_version(root, version)
+    print()
+
+    print("=== Menu surfaces (resolved by literal + signature shape) ===")
+    resolve_menu_surfaces(root)
     print()
 
     print("=== Manifest ===")

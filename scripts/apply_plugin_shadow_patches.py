@@ -12,7 +12,7 @@ the plugin APK:
       Ljava/lang/String;      p3 optimizedDirectory
       Ljava/lang/String;      p4 librarySearchPath
       Ljava/lang/ClassLoader; p5 parent
-      Llnc;                   p6 pluginFinder
+      L…;                    p6 pluginFinder (R8 letter; wildcarded)
       Lcom/combo/core/runtime/loader/PluginClassLoadingPolicy;)V
 
 Why here and not at the construction site (Ltmf;): PluginClassLoader has TWO
@@ -36,11 +36,22 @@ import sys
 from pathlib import Path
 
 PCL_SMALI = "smali/com/combo/core/runtime/loader/PluginClassLoader.smali"
-PCL_CTOR = (
-    ".method public constructor <init>("
-    "Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;"
-    "Ljava/lang/ClassLoader;Llnc;"
-    "Lcom/combo/core/runtime/loader/PluginClassLoadingPolicy;)V\n"
+
+# Every type in this signature is a real framework/JDK name except the
+# pluginFinder, which is an R8 letter and duly drifted Llnc; (6.1.1) -> Lrnc;
+# (6.1.2) while the structure stayed identical. Wildcard just that one parameter
+# rather than re-pinning a letter each release.
+#
+# The pattern still can't collide with the class's three other constructors:
+# the File-based one takes Ljava/io/File; in slot 2, and both synthetic bridges
+# are "public synthetic constructor" and append ILkotlin/…/DefaultConstructorMarker;
+# after the policy — so requiring "public constructor" and Policy;)V right at the
+# end pins us to the String-based one.
+PCL_CTOR_RE = re.compile(
+    r"\.method public constructor <init>\("
+    r"Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;"
+    r"Ljava/lang/ClassLoader;L[\w$/]+;"
+    r"Lcom/combo/core/runtime/loader/PluginClassLoadingPolicy;\)V\n"
 )
 HANDLER = "Lcom/xj/winemu/vibration/BhPluginShadow;"
 
@@ -78,14 +89,18 @@ def main():
             f"plugin framework, so there is no plugin classloader to shadow.")
     src = p.read_text(encoding="utf-8", errors="replace")
 
-    n = src.count(PCL_CTOR)
-    if n == 0:
+    hits = PCL_CTOR_RE.findall(src)
+    if len(hits) == 0:
         die("PluginClassLoader's String-based constructor was not found with the "
-            "expected signature — re-anchor (check the Llnc; pluginFinder type).")
-    if n != 1:
-        die(f"PluginClassLoader constructor anchor is non-unique ({n} matches).")
+            "expected signature — re-anchor (the parameter list changed shape, "
+            "not just the obfuscated pluginFinder type, which is wildcarded).")
+    if len(hits) != 1:
+        die(f"PluginClassLoader constructor anchor is non-unique "
+            f"({len(hits)} matches): {hits}")
 
-    start = src.index(PCL_CTOR)
+    m = PCL_CTOR_RE.search(src)
+    print(f"    anchored on {m.group(0).strip()}")
+    start = m.start()
     end = src.find("\n.end method", start)
     if end < 0:
         die("unclosed PluginClassLoader constructor")

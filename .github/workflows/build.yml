@@ -4,17 +4,17 @@ name: Build APK
 # bannerhub-revanced's privacy patch set. Adds dual-motor low/high
 # dispatch + preload-free SDL rumble keepalive (winebus.so duration
 # patched on disk) and kills Firebase / GMS Measurement / Mob Push /
-# XiaoJi heartbeat+events / JieLi OTA on top of stock GameHub 6.1.1.
+# XiaoJi heartbeat+events / JieLi OTA on top of stock GameHub 6.1.2.
 # Otherwise unchanged from upstream Tencent build.
 #
 # One-time setup: upload the original GameHub APK as an asset on a
-# release tagged `base-apk-6.1.1` in this repo. The workflow
+# release tagged `base-apk-6.1.2` in this repo. The workflow
 # `gh release download`s from there.
 
 on:
   push:
     tags:
-      - 'v*-6.1.1*'
+      - 'v*-6.1.2*'
   workflow_dispatch:
 
 jobs:
@@ -30,17 +30,29 @@ jobs:
       - name: Resolve base version
         id: base
         run: |
-          # Only 6.1.1 is supported. Kept as a step so downstream steps can
+          # Only 6.1.2 is supported. Kept as a step so downstream steps can
           # still reference steps.base.outputs.* without restructuring.
-          echo "version=6.1.1" >> "$GITHUB_OUTPUT"
-          echo "release_tag=base-apk-6.1.1" >> "$GITHUB_OUTPUT"
+          echo "version=6.1.2" >> "$GITHUB_OUTPUT"
+          echo "release_tag=base-apk-6.1.2" >> "$GITHUB_OUTPUT"
           # The PC engine is a separately-downloaded plugin from 6.1.1 on, and
           # the dual-motor rumble hooks live inside it. Upload the plugin APK
           # (pulled from a device: files/plugins/com.xiaoji.egggame.plugin.pcengine/
           # base.apk) as an asset on this tag. Must match the versionCode in
           # extension/BhPluginShadow.java#EXPECTED_PLUGIN_VERSION_CODE.
+          #
+          # 6.1.2 BUMPED THE PLUGIN CONTRACT: the host now hard-requires plugin
+          # schemaVersion == 3 (6.1.1 required 2) — see the equality check in the
+          # identity manager, Lvyi; on 6.1.2. So the 101 plugin (schemaVersion 2)
+          # is NOT valid here and a new plugin must be pulled from a device that
+          # has installed it, uploaded under a new pcengine-plugin-<code> tag,
+          # and EXPECTED_PLUGIN_VERSION_CODE raised to match. Until then this
+          # points at 101, the shadow's version gate refuses, and the build ships
+          # with dual-motor OFF (loudly: Toast + settings banner + logcat) plus —
+          # and this is the part that matters — the PLUGIN-SIDE PRIVACY KILLS
+          # INERT, because the heartbeat and device-perf stubs ride the same
+          # shadow dex. Sustained rumble is unaffected.
           echo "plugin_tag=pcengine-plugin-101" >> "$GITHUB_OUTPUT"
-          echo "Base version: 6.1.1"
+          echo "Base version: 6.1.2"
 
       - name: Download original GameHub APK
         run: |

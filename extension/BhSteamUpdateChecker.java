@@ -127,10 +127,19 @@ public final class BhSteamUpdateChecker {
     private static final String DISPATCHER_IO_METHOD   = "getIO";
     // Host suspend-lambda wrapping the per-app update check + badge broadcast.
     // ctor (int appId, Continuation completion, boolean flag); invokeSuspend ->
-    // Ljao;->x(appId, flag, self) -> Lwvo;->w/l/b/I = check-only (the apply path
-    // startLatestSteamUpdate is the sibling Lwvo;->J, never reached from here).
-    private static final String CHECK_BLOCK_CLASS      = "o0a";
-    // o0a passes this flag STRAIGHT THROUGH (no `xor 1` as on 6.0.9's wke).
+    // <steamRepo>->x(appId, flag, self) = check-only (the apply path
+    // startLatestSteamUpdate is a sibling method, never reached from here).
+    //
+    // Re-derive by ctor shape — `(ILkotlin/coroutines/Continuation;Z)V` is
+    // unique across every dex on both bases:
+    //   grep -rl '^\.method public constructor <init>(ILkotlin/coroutines/Continuation;Z)V'
+    // Confirm by checking the host's own dispatcher still constructs it
+    // (Lvi0;->j(IZLContinuationImpl;) on both 6.1.1 and 6.1.2) and that the
+    // block calls two letter-methods mirroring 6.1.1's Ljao;->x + Lm43;->o
+    // (6.1.2: Lqao;->x + Ll43;->o).
+    private static final String CHECK_BLOCK_CLASS      = "t0a";   // 6.1.1 o0a
+    // The block passes this flag STRAIGHT THROUGH (no `xor 1` as on 6.0.9's
+    // wke) — re-verified on 6.1.2 at the Lvi0;->j construction site.
     // In Lwvo;->w it selects the throttled variant: TRUE = respect the host's
     // 30 min / 60 s per-app cooldowns and record a timestamp; FALSE =
     // unthrottled, always query, don't touch host bookkeeping. We own our

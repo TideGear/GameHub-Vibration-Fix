@@ -41,50 +41,71 @@ import java.util.concurrent.TimeUnit;
  * everything below is a real name EXCEPT the four app-owned R8 letters,
  * which must be re-derived on every base bump:
  *
- *   {@link #SAVE_BLOCK_CLASS} = "f8n" + {@link #SAVE_BLOCK_CASE} = 0x14
- *       The save coroutine. On 6.1.1 R8 HORIZONTALLY MERGED 29 unrelated
+ *   {@link #SAVE_BLOCK_CLASS} = "l8n" + {@link #SAVE_BLOCK_CASE} = 0x14
+ *       The save coroutine. Since 6.1.1 R8 HORIZONTALLY MERGES ~29 unrelated
  *       suspend lambdas into one class discriminated by an int field `a`,
  *       so the class alone is not enough — the case number is part of the
- *       anchor. Evidence: smali_classes3/f8n.smali, ctor
- *       `<init>(Object, Object, Continuation, I)` (b = layoutId String,
- *       c = layout), and `invokeSuspend`'s `:pswitch_8` block (= packed
- *       index 20 = 0x14) is the 1:1 port of 6.0.9's `Lqpm;->invokeSuspend`:
- *       same "assets"/"layout.json"/"preview.png"/"vjoy_layouts/" strings,
- *       same FNV-1a constants 0x14650fb0739d0383 / 0x100000001b3, same
- *       13-arg save-receipt ctor. Cross-checked against the host's own call
- *       site smali_classes3/c0s.smali `i()`:
- *           sget-object v0, Lkj0;->a           ; = Dispatchers.getIO()
- *           new-instance v1, Lf8n;
- *           const/16 v3, 0x14
- *           invoke-direct {v1, p0, p1, v2, v3}, Lf8n;-><init>(...)
+ *       anchor. The cheapest way to re-derive BOTH on a base bump is to read
+ *       the host's own call site, which is the `i()` method of the Json holder
+ *       ({@link #VJOY_JSON_HOLDER}). On 6.1.2 that is
+ *       smali_classes3/o0s.smali, byte-for-byte the 6.1.1 shape:
+ *           sget-object v0, Lkj0;->a           ; = Dispatchers.getIO() cache
+ *           new-instance v1, Ll8n;             ; <- SAVE_BLOCK_CLASS
+ *           const/16 v3, 0x14                  ; <- SAVE_BLOCK_CASE
+ *           invoke-direct {v1, p0, p1, v2, v3}, Ll8n;-><init>(
+ *               Ljava/lang/Object;Ljava/lang/Object;
+ *               Lkotlin/coroutines/Continuation;I)V
  *           BuildersKt->withContext(v0, v1, p2)
- *       (6.0.9 "qpm"; 6.0.4 "m0n")
+ *       Its second parameter is also the VJoyLayout type, so this one method
+ *       independently confirms {@link #VJOY_LAYOUT_CLASS} too — a useful
+ *       cross-check against the serializer route described below.
+ *       The block's body is still the 1:1 port of 6.0.9's
+ *       `Lqpm;->invokeSuspend`: same "assets"/"layout.json"/"preview.png"/
+ *       "vjoy_layouts/" strings, same FNV-1a constants
+ *       0x14650fb0739d0383 / 0x100000001b3, same 13-arg save-receipt ctor.
+ *       (6.1.1 "f8n"; 6.0.9 "qpm"; 6.0.4 "m0n". The CASE has been 0x14
+ *       throughout, so don't assume it moves with the letter.)
  *
- *   {@link #VJOY_LAYOUT_CLASS} = "tvr"
+ *   {@link #VJOY_LAYOUT_CLASS} = "ewr"
  *       The VJoyLayout data class. The 6.0.9 FQN
  *       com.xiaoji.egggame.common.ui.vjoy.model.VJoyLayout is gone — that
- *       whole package is obfuscated away in 6.1.1. PROOF that tvr is it:
- *       its generated serializer smali_classes2/rvr.smali still carries
- *       the descriptor serialName string
- *       "com.xiaoji.egggame.common.ui.vjoy.model.VJoyLayout" plus the
+ *       whole package is obfuscated away from 6.1.1 on. PROOF: its generated
+ *       serializer (6.1.1 smali_classes2/rvr.smali, 6.1.2
+ *       smali_classes2/cwr.smali) still carries the descriptor serialName
+ *       string "com.xiaoji.egggame.common.ui.vjoy.model.VJoyLayout" plus the
  *       element names formatVersion/id/name/description/meta/settings/
- *       controls/layers/activeLayerIndex/nextLayerIndex, and its
- *       `serialize` does `check-cast p2, Ltvr;`. Field order in
- *       smali_classes2/tvr.smali `<init>(I,String,Lr2g;,Lr2g;,Map,Ln0s;,
- *       List,List,I,I)` matches 6.0.9's VJoyLayout ctor exactly, so
- *       a=formatVersion, b=id, c=name, d=description, …
- *       Re-derive with: grep for that serialName string, then read the
- *       serializer's `serialize` check-cast.
+ *       controls/layers/activeLayerIndex/nextLayerIndex. Field order in the
+ *       data class `<init>(I,String,…,Map,…,List,List,I,I)` matches 6.0.9's
+ *       VJoyLayout ctor exactly, so a=formatVersion, b=id, c=name,
+ *       d=description, …
  *
- *   {@link #VJOY_JSON_HOLDER} = "c0s" (static field "a") — the host's
- *       configured Json for layouts (6.0.9
- *       VJoyLayoutJson.Default). Evidence: smali_classes3/c0s.smali
- *       `<clinit>` does `sput Lzzr;->b -> Lc0s;->a`, and BOTH the save
- *       block (f8n case 0x14) and the host's own pack-import
- *       (`Lc0s;->a(Lsoi;)`) use `Lc0s;->a` for encodeToString /
+ *       Re-derive: grep for that serialName literal to get the SERIALIZER,
+ *       then read the data class out of it. The serializer allocates exactly
+ *       two types — itself and the data class — so
+ *           grep -o 'new-instance [pv][0-9]*, L[a-z0-9]*;' <serializer>.smali
+ *       yields {itself, VJoyLayout}; take the one that is not itself. Verified
+ *       on both bases: rvr -> tvr (6.1.1), cwr -> ewr (6.1.2). The
+ *       {@link #SAVE_BLOCK_CLASS} call site above confirms it independently.
+ *       (6.1.1 "tvr")
+ *
+ *   {@link #VJOY_JSON_HOLDER} = "o0s" (static field "a") — the host's
+ *       configured Json for layouts (6.0.9 VJoyLayoutJson.Default). Evidence:
+ *       smali_classes3/o0s.smali `<clinit>` does `sput Ll0s;->b -> Lo0s;->a`,
+ *       and BOTH the save block (l8n case 0x14) and the host's own pack-import
+ *       (`Lo0s;->a(L…;)`) use `Lo0s;->a` for encodeToString /
  *       decodeFromString. Fallback anchor {@link #VJOY_JSON_HOLDER_ALT}
- *       "zzr" field "b" is the same object one hop upstream; `Lzzr;->a`
+ *       "l0s" field "b" is the same object one hop upstream; `Ll0s;->a`
  *       is the polymorphic SerializersModule it is built from.
+ *
+ *       Re-derive by SHAPE — the pair is the only class in the tree with two
+ *       `public static final <f>:Lkotlinx/serialization/json/Json;` fields that
+ *       also touches `Lkotlinx/io/files/Path;`, and its `<clinit>` names the
+ *       upstream holder for free:
+ *           6.1.1  c0s.a <- zzr.b   c0s.b <- zzr.d
+ *           6.1.2  o0s.a <- l0s.b   o0s.b <- l0s.d
+ *       This class is worth finding first on any base bump: its `i()` method is
+ *       also how {@link #SAVE_BLOCK_CLASS}, {@link #SAVE_BLOCK_CASE} and
+ *       {@link #VJOY_LAYOUT_CLASS} get confirmed. (6.1.1 "c0s"/"zzr")
  *
  *   {@link #APP_DATABASE_CLS} — still a kept FQN on 6.1.1
  *       (smali_classes2/com/xiaoji/egggame/core/database/AppDatabase.smali),
@@ -122,16 +143,19 @@ public final class BhVjoyImporter {
 
     // === App-owned R8 letters (re-derive every base bump; see class doc) ===
     /** Merged suspend-lambda class holding the VJoy save coroutine. */
-    private static final String SAVE_BLOCK_CLASS = "f8n";
-    /** Which merged case inside SAVE_BLOCK_CLASS is the save coroutine. */
+    private static final String SAVE_BLOCK_CLASS = "l8n";   // 6.1.1 f8n
+    /**
+     * Which merged case inside SAVE_BLOCK_CLASS is the save coroutine.
+     * Unchanged 6.1.1 -> 6.1.2 — do not assume it tracks the class letter.
+     */
     private static final int    SAVE_BLOCK_CASE  = 0x14;
-    /** The VJoyLayout data class (6.0.9: an FQN; 6.1.1: obfuscated). */
-    private static final String VJOY_LAYOUT_CLASS = "tvr";
+    /** The VJoyLayout data class (6.0.9: an FQN; 6.1.1+: obfuscated). */
+    private static final String VJOY_LAYOUT_CLASS = "ewr";   // 6.1.1 tvr
     /** Holder of the host's layout Json; static field VJOY_JSON_FIELD. */
-    private static final String VJOY_JSON_HOLDER  = "c0s";
+    private static final String VJOY_JSON_HOLDER  = "o0s";   // 6.1.1 c0s
     private static final String VJOY_JSON_FIELD   = "a";
     /** Same Json one hop upstream, used if the primary anchor moves. */
-    private static final String VJOY_JSON_HOLDER_ALT = "zzr";
+    private static final String VJOY_JSON_HOLDER_ALT = "l0s";  // 6.1.1 zzr
     private static final String VJOY_JSON_FIELD_ALT  = "b";
 
     // === Kept host / library FQNs ===
