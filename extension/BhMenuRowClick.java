@@ -156,9 +156,9 @@ public final class BhMenuRowClick {
     // (13 refs vs 0 on 6.1.2). Note the 3-dot row's ctor is `public synthetic`,
     // so a pattern requiring `public constructor` silently misses it.
     // ─────────────────────────────────────────────────────────────────────
-    private static final String ROW_MORE_MENU  = "r2h";
-    private static final String ROW_TILE_POPUP = "ozf";
-    private static final String ROW_THREE_DOT  = "uvg";
+    private static final String ROW_MORE_MENU  = "zii";   // 6.1.2 r2h
+    private static final String ROW_TILE_POPUP = "uog";   // 6.1.2 ozf
+    private static final String ROW_THREE_DOT  = "dyh";   // 6.1.2 uvg
 
     private static final String FUNCTION0 = "kotlin.jvm.functions.Function0";
     private static final String FUNCTION1 = "kotlin.jvm.functions.Function1";
@@ -170,7 +170,7 @@ public final class BhMenuRowClick {
     // because it is CMP-internal (6.1.1 "ull", 6.0.9 "o4h", 6.0.4 "tdi").
     // Re-derive by reading StringResource's superclass out of the tree:
     //   grep '^\.super' smali*/org/jetbrains/compose/resources/StringResource.smali
-    private static final String RESOURCE_DESCRIPTOR_BASE = "aml";
+    private static final String RESOURCE_DESCRIPTOR_BASE = "x7n";  // 6.1.2 aml
 
     private static final String ROW_LABEL = "PC Vibration Settings";
 
@@ -301,21 +301,25 @@ public final class BhMenuRowClick {
 
             Object row = CACHED_TILE_ROW;
             if (row == null) {
-                // Icon field on Lizf; is `b` (a=actionId, b=icon, c=label,
-                // d=onClick).
+                // Field layout is stable across bases: a=actionId, b=icon,
+                // c=label, d=onClick. But 6.2.0 REORDERED THE CONSTRUCTOR to
+                // (actionId, label, onClick, icon) while leaving those fields
+                // alone, so ctor order and field order are independent and both
+                // need re-deriving on a bump. Read it out of the ctor body,
+                // which stores p1->a, p2->c, p3->d, p4->b.
                 Object icon = borrowIconFrom(origList, rowCls, "b");
                 if (icon == null) {
                     Log.w(TAG, "no sibling tile-popup row to borrow an icon from");
                     return safeReturn(original);
                 }
                 Constructor<?> ctor = rowCls.getDeclaredConstructor(
-                        String.class, iconCls, String.class, fn0Cls);
+                        String.class, String.class, fn0Cls, iconCls);
                 ctor.setAccessible(true);
                 row = ctor.newInstance(
                         "local_detail_menu_pc_vibration",
-                        icon,
                         ROW_LABEL,
-                        newClickProxy(fn0Cls, 0, "BhTilePopupRowClick"));
+                        newClickProxy(fn0Cls, 0, "BhTilePopupRowClick"),
+                        icon);
                 CACHED_TILE_ROW = row;
             }
             if (origList.contains(row)) return safeReturn(original);

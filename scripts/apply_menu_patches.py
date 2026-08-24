@@ -105,7 +105,7 @@ from pathlib import Path
 # plugin host activity and the same smali layout. apktool.yml carries the
 # actual versionName, so report that and keep the probes for the *family*
 # decision (plugin-era vs base-APK-engine).
-SUPPORTED_BASES = ("6.1.1", "6.1.2")
+SUPPORTED_BASES = ("6.1.1", "6.1.2", "6.2.0")
 
 
 def apktool_version(root: Path):
@@ -524,7 +524,24 @@ VIB_HANDLER = "Lcom/xj/winemu/vibration/BhMenuRowClick;"
 # Compose Multiplatform's resource resolver. Real (unobfuscated) names as of
 # 6.1.1 — apply_export_controls_patches.py extends the sibling overloads in the
 # same file, so keep these two in sync with that script's EXTRA_RESOLVERS.
-RESOLVER_FILE = "smali_classes4/org/jetbrains/compose/resources/StringResourcesKt.smali"
+# Compose Multiplatform keeps its real package name, but R8 shuffles which dex
+# bucket it lands in on every build (6.1.1/6.1.2 smali_classes4 -> 6.2.0
+# smali_classes2), so the bucket is discovered rather than hardcoded.
+RESOLVER_REL = "org/jetbrains/compose/resources/StringResourcesKt.smali"
+
+
+def resolver_path(root: Path) -> Path:
+    hits = sorted(root.glob(f"smali*/{RESOLVER_REL}"))
+    if not hits:
+        print(f"ERROR: {RESOLVER_REL} not found in any smali* bucket — the Compose "
+              f"Multiplatform resource runtime moved or was renamed; re-anchor.",
+              file=sys.stderr)
+        sys.exit(1)
+    if len(hits) > 1:
+        print(f"ERROR: {RESOLVER_REL} is non-unique: "
+              f"{[h.relative_to(root).as_posix() for h in hits]}", file=sys.stderr)
+        sys.exit(1)
+    return hits[0]
 RESOLVER_HEADER = (
     ".method public static final stringResource("
     "Lorg/jetbrains/compose/resources/StringResource;"
@@ -679,7 +696,7 @@ def patch_resolver(root: Path) -> None:
     (6.0.9 Ly99;->Z(Llok;Lgm3;I), 6.0.4 Lxd3;->l1(Lell;Lv83;I)). Being a real
     library name rather than an R8 letter, this anchor should now survive base
     bumps. The injected body is unchanged (v0 is free under .locals 7)."""
-    p = root / RESOLVER_FILE
+    p = resolver_path(root)
     src = read(p)
     header = RESOLVER_HEADER
     body = (

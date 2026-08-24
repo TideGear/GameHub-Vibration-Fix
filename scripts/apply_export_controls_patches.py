@@ -97,7 +97,7 @@ from pathlib import Path
 # plugin host activity and the same smali layout. apktool.yml carries the
 # actual versionName, so report that and keep the probes for the *family*
 # decision (plugin-era vs base-APK-engine).
-SUPPORTED_BASES = ("6.1.1", "6.1.2")
+SUPPORTED_BASES = ("6.1.1", "6.1.2", "6.2.0")
 
 
 def apktool_version(root: Path):
@@ -525,8 +525,24 @@ RESOLVER_HANDLER = "Lcom/xj/winemu/vibration/BhMenuRowClick;"
 # file path in sync with RESOLVER_FILE in apply_menu_patches.py, which installs
 # the primary short-circuit on the single-key stringResource overload in the
 # same class.
-RESOLVER_FILE = ("smali_classes4/org/jetbrains/compose/resources/"
-                 "StringResourcesKt.smali")
+# Compose Multiplatform keeps its real package name, but R8 shuffles which dex
+# bucket it lands in on every build (6.1.1/6.1.2 smali_classes4 -> 6.2.0
+# smali_classes2), so the bucket is discovered rather than hardcoded.
+RESOLVER_REL = "org/jetbrains/compose/resources/StringResourcesKt.smali"
+
+
+def resolver_path(root: Path) -> Path:
+    hits = sorted(root.glob(f"smali*/{RESOLVER_REL}"))
+    if not hits:
+        print(f"ERROR: {RESOLVER_REL} not found in any smali* bucket — the Compose "
+              f"Multiplatform resource runtime moved or was renamed; re-anchor.",
+              file=sys.stderr)
+        sys.exit(1)
+    if len(hits) > 1:
+        print(f"ERROR: {RESOLVER_REL} is non-unique: "
+              f"{[h.relative_to(root).as_posix() for h in hits]}", file=sys.stderr)
+        sys.exit(1)
+    return hits[0]
 SR = "Lorg/jetbrains/compose/resources/StringResource;"
 
 EXTRA_RESOLVERS = (
@@ -546,9 +562,7 @@ EXTRA_RESOLVERS = (
 
 
 def patch_extra_resolvers(root: Path) -> None:
-    p = root / RESOLVER_FILE
-    if not p.is_file():
-        die(f"{RESOLVER_FILE} not found (apply_menu_patches.py must have run)")
+    p = resolver_path(root)
     for header, label, what in EXTRA_RESOLVERS:
         body = (
             f"    # BH: short-circuit non-Compose/format-args resource lookups\n"

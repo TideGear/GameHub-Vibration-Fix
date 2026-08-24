@@ -10,7 +10,7 @@ It is built on GameHub v6.x and heavily uses the work of
 [@The412Banner](https://github.com/The412Banner) as well as others. It
 also includes my own PC-accurate controller vibration fixes.
 
-> ### 6.1.2 — everything working, pinned to PC-engine plugin 102
+> ### ⚠️ 6.2.0 — base APK ported and building; the plugin half needs a schema-4 plugin
 >
 > GameHub **6.1.1 moved the PC/Wine engine out of the APK** into a
 > separately-downloaded plugin, which splits the vibration work in two. GameScrub
@@ -18,35 +18,35 @@ also includes my own PC-accurate controller vibration fixes.
 > small "shadow" dex to the plugin's `DexClassLoader` path — see
 > [PC engine plugin](#pc-engine-plugin-611).
 >
-> **6.1.2 (versionCode 124) also bumped the plugin contract**: the host now
-> hard-requires plugin `schemaVersion == 3` (6.1.1 required 2), and rejects the
-> older one outright with *"PC engine plugin schema 2 is not supported"*. The
-> shadow is therefore cut against **plugin 102** (`versionName 102-3`,
-> `EXPECTED_PLUGIN_VERSION_CODE`), and all of it is verified on-device:
-> `dual-motor ACTIVE — shadowing PC engine plugin v102`, a real game session with
-> **zero** `heartbeat/game` POSTs and `uploadedBatches=0`.
+> **The plugin contract bumps on nearly every base**: `schemaVersion` 2 on 6.1.1,
+> 3 on 6.1.2, and **4 on 6.2.0** (versionCode 125). The host rejects anything else
+> outright — *"PC engine plugin schema N is not supported"*. The schema-4 plugin
+> has not been pulled yet, so this build still ships the plugin-102 shadow, which
+> the version gate correctly refuses.
 >
-> The one caveat is unchanged: dual-motor is version-pinned. If the plugin updates
-> again, the gate refuses the stale shadow and dual-motor switches itself off —
-> loudly, via Toast, a settings banner and logcat — while sustained rumble and the
-> engine keep working. Degraded, never broken.
+> | | 6.2.0 |
+> |---|---|
+> | Privacy (base APK): Firebase, GMS Measurement, Mob Push, OEM push fleet, `/events`, heartbeat/playtime, OTA | **working** |
+> | Sustained rumble past 1 s | **working** — `winebus.so` stayed in the Wine component tree |
+> | Layout export + import | **working** |
+> | "Online Update" badges | **working** |
+> | Dual-motor low/high dispatch | **off** until the schema-4 plugin is pulled |
+> | Plugin-side privacy: heartbeat (Steam ID64 every 30 s) + device-perf telemetry | **off — those trackers are live again** |
 >
-> **Be aware of what else that costs.** The shadow dex carries the dual-motor hooks
-> *and* the plugin-side privacy stubs, so a refused shadow also means the
-> heartbeat (your Steam ID64, every 30 s) and the device-perf telemetry are live
-> again. Treat a dual-motor warning as a privacy regression too, not just a rumble
-> one — see
+> That last row is the one to care about: the dual-motor hooks and the
+> plugin-side privacy stubs ride the **same** shadow dex, so a refused shadow
+> disables both. The refusal is deliberate and loud (Toast + settings banner +
+> logcat) rather than silent — see
 > [What happens when the plugin updates](#what-happens-when-the-plugin-updates).
 >
-> **To re-pin after a plugin bump:** pull
+> **To finish:** pull
 > `<filesDir>/plugins/com.xiaoji.egggame.plugin.pcengine/base.apk` from a device
-> running stock GameHub, upload it as a `pcengine-plugin-<versionCode>` release
+> running stock 6.2.0, upload it as a `pcengine-plugin-<versionCode>` release
 > asset, re-run `apply_plugin_rumble_patches.py` +
 > `apply_plugin_privacy_patches.py` + `build_plugin_shadow_dex.py` against it, and
 > raise `EXPECTED_PLUGIN_VERSION_CODE` in
-> [BhPluginShadow](extension/BhPluginShadow.java) to match. Every anchor in those
-> scripts is derived from the tree, so the letters drifting is expected and
-> shouldn't need edits.
+> [BhPluginShadow](extension/BhPluginShadow.java). Every anchor in those scripts is
+> derived from the tree, so drifting letters shouldn't need edits.
 
 What you get over stock GameHub:
 
@@ -483,11 +483,11 @@ if any anchor is missing or non-unique.
 ## Build
 
 CI workflow: `.github/workflows/build.yml` — triggers on `workflow_dispatch`
-or push of a `v*-6.1.2*` tag.
+or push of a `v*-6.2.0*` tag.
 
 One-time setup: upload the original GameHub APK as an asset on a release
-tagged `base-apk-6.1.2` in this repo (e.g.
-`GameHub_6.1.2_9fcd54341d3dbf0c07fac4048496eb79.apk`). The workflow
+tagged `base-apk-6.2.0` in this repo (e.g.
+`GameHub_6.2.0_ca15a5a5df49b5552ea62f2bcd3a6810.apk`). The workflow
 `gh release download`s from there.
 
 `scripts/apply_vibration_patches.py` **is** run on 6.1.1, but does less than it
