@@ -70,11 +70,22 @@ public final class BhPluginShadow {
      * new plugin.
      *
      * 101 = the GameHub 6.1.1-era plugin (schemaVersion 2).
-     * 102 = the 6.1.2-era plugin (schemaVersion 3). 6.1.2's host hard-requires
-     *       schema 3, so 101 is not merely stale there — the host rejects it
-     *       outright with "PC engine plugin schema 2 is not supported".
+     * 102 = the 6.1.2-era plugin (schemaVersion 3).
+     * 103 = the 6.2.0-era plugin (schemaVersion 4).
+     *
+     * Every base so far has hard-required its own schemaVersion, so an older
+     * plugin is not merely stale — the host refuses to load it at all
+     * ("PC engine plugin schema N is not supported") and downloads a new one.
+     * In practice that means this constant moves on every base bump.
+     *
+     * Note the read below can legitimately return -1 on the FIRST load after a
+     * plugin install: the host writes its identity record around the same moment
+     * the classloader is built, so the record may not be there yet. That
+     * degrades (refuses the shadow) for that one launch and self-heals on the
+     * next, which is the safe direction — but it is why a fresh install shows
+     * "updated to v?" once before settling.
      */
-    private static final long EXPECTED_PLUGIN_VERSION_CODE = 102L;
+    private static final long EXPECTED_PLUGIN_VERSION_CODE = 103L;
 
     /** Written into the APK's assets/ by the build. */
     private static final String SHADOW_ASSET = "bh_pcengine_shadow.dex";

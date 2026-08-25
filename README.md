@@ -10,7 +10,7 @@ It is built on GameHub v6.x and heavily uses the work of
 [@The412Banner](https://github.com/The412Banner) as well as others. It
 also includes my own PC-accurate controller vibration fixes.
 
-> ### ⚠️ 6.2.0 — base APK ported and building; the plugin half needs a schema-4 plugin
+> ### 6.2.0 — everything working, pinned to PC-engine plugin 103
 >
 > GameHub **6.1.1 moved the PC/Wine engine out of the APK** into a
 > separately-downloaded plugin, which splits the vibration work in two. GameScrub
@@ -18,35 +18,27 @@ also includes my own PC-accurate controller vibration fixes.
 > small "shadow" dex to the plugin's `DexClassLoader` path — see
 > [PC engine plugin](#pc-engine-plugin-611).
 >
-> **The plugin contract bumps on nearly every base**: `schemaVersion` 2 on 6.1.1,
-> 3 on 6.1.2, and **4 on 6.2.0** (versionCode 125). The host rejects anything else
-> outright — *"PC engine plugin schema N is not supported"*. The schema-4 plugin
-> has not been pulled yet, so this build still ships the plugin-102 shadow, which
-> the version gate correctly refuses.
+> **The plugin contract has bumped on every base so far**: `schemaVersion` 2 on
+> 6.1.1, 3 on 6.1.2, 4 on 6.2.0. The host refuses anything else outright — *"PC
+> engine plugin schema N is not supported"* — and downloads a replacement. So the
+> shadow is cut against **plugin 103** (`versionName 103-4`,
+> `EXPECTED_PLUGIN_VERSION_CODE`), verified on device:
+> `dual-motor ACTIVE — shadowing PC engine plugin v103`.
 >
-> | | 6.2.0 |
-> |---|---|
-> | Privacy (base APK): Firebase, GMS Measurement, Mob Push, OEM push fleet, `/events`, heartbeat/playtime, OTA | **working** |
-> | Sustained rumble past 1 s | **working** — `winebus.so` stayed in the Wine component tree |
-> | Layout export + import | **working** |
-> | "Online Update" badges | **working** |
-> | Dual-motor low/high dispatch | **off** until the schema-4 plugin is pulled |
-> | Plugin-side privacy: heartbeat (Steam ID64 every 30 s) + device-perf telemetry | **off — those trackers are live again** |
+> The caveat is unchanged: dual-motor is version-pinned, and if the plugin updates
+> the gate refuses the stale shadow and switches dual-motor off — loudly (Toast +
+> settings banner + logcat) — while sustained rumble and the engine keep working.
 >
-> That last row is the one to care about: the dual-motor hooks and the
-> plugin-side privacy stubs ride the **same** shadow dex, so a refused shadow
-> disables both. The refusal is deliberate and loud (Toast + settings banner +
-> logcat) rather than silent — see
+> **A refused shadow is also a privacy regression.** The same dex carries the
+> plugin-side privacy stubs, so a mismatch turns the playtime heartbeat (your
+> Steam ID64, every 30 s) and the device-perf telemetry back on. Treat the warning
+> as more than a rumble notice — see
 > [What happens when the plugin updates](#what-happens-when-the-plugin-updates).
 >
-> **To finish:** pull
-> `<filesDir>/plugins/com.xiaoji.egggame.plugin.pcengine/base.apk` from a device
-> running stock 6.2.0, upload it as a `pcengine-plugin-<versionCode>` release
-> asset, re-run `apply_plugin_rumble_patches.py` +
-> `apply_plugin_privacy_patches.py` + `build_plugin_shadow_dex.py` against it, and
-> raise `EXPECTED_PLUGIN_VERSION_CODE` in
-> [BhPluginShadow](extension/BhPluginShadow.java). Every anchor in those scripts is
-> derived from the tree, so drifting letters shouldn't need edits.
+> One known cosmetic wrinkle: on the **first** load after a plugin install the
+> host may not have committed its identity record yet, so the gate reads the
+> version as `?` and degrades for that one launch, then settles. It fails in the
+> safe direction and self-heals.
 
 What you get over stock GameHub:
 

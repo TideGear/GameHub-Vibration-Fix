@@ -45,17 +45,9 @@ jobs:
           # manager, Lqik; on 6.2.0). An older plugin is rejected outright with
           # "PC engine plugin schema N is not supported".
           #
-          # !! 6.2.0 NEEDS A SCHEMA-4 PLUGIN, which is not published yet. This
-          # still points at plugin 102 (schema 3), so the shadow's version gate
-          # refuses and the build ships with dual-motor OFF and the plugin-side
-          # privacy kills INERT. Pull the schema-4 plugin off a device running
-          # stock 6.2.0, upload it as pcengine-plugin-<code>, re-run the three
-          # plugin scripts, and raise EXPECTED_PLUGIN_VERSION_CODE to match.
-          #
-          # If this asset is missing the build still works, but ships with
-          # dual-motor OFF *and* the plugin-side privacy kills inert -- the
-          # heartbeat (Steam ID64) and device-perf stubs ride the same shadow dex.
-          echo "plugin_tag=pcengine-plugin-102" >> "$GITHUB_OUTPUT"
+          # 6.2.0 needs the schema-4 plugin, which is 103 (versionName 103-4).
+          # It must match EXPECTED_PLUGIN_VERSION_CODE in BhPluginShadow.java.
+          echo "plugin_tag=pcengine-plugin-103" >> "$GITHUB_OUTPUT"
           echo "Base version: 6.2.0"
 
       - name: Download original GameHub APK
