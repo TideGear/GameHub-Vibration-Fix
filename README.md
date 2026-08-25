@@ -61,7 +61,7 @@ What you get over stock GameHub:
   old endpoint is off and this replaced it). GameScrub stubs the uploader
   through the same shadow dex used for dual-motor, so the plugin APK is never
   modified. The uploader's class letter drifts every plugin build
-  (101 `Lxjp/mv1;` → 102 `Lxjp/qv1;`), so the script locates it by its
+  (101 `Lxjp/mv1;` → 102 `Lxjp/qv1;` → 103 `Lxjp/b12;`), so the script locates it by its
   upload/retry method pair rather than by name. Sampling and local summary storage still run;
   nothing is sent.
 - **Dual-motor low/high dispatch.**
@@ -139,10 +139,10 @@ key, so a patched plugin can be re-validated by recomputing that record.
 
 **On-device layout.** Confirmed from the app's own logs under
 `/sdcard/Android/data/com.xiaoji.egggame/files/logs/` (paths verified on both
-6.1.1/plugin 101 and 6.1.2/plugin 102):
+6.1.1/plugin 101, 6.1.2/plugin 102 and 6.2.0/plugin 103):
 
 ```
-files/plugins/com.xiaoji.egggame.plugin.pcengine/base.apk        the plugin (v102, ~23.4 MB)
+files/plugins/com.xiaoji.egggame.plugin.pcengine/base.apk        the plugin (v103, ~24.1 MB)
 files/plugins/com.xiaoji.egggame.plugin.pcengine/lib/arm64-v8a   its extracted native libs
 files/usr/opt/wine_proton11.0-arm64x/…                           the Wine tree — winebus.so
 files/usr/home/components/{Fex_*, dxvk-*, turnip_*, vkd3d-proton-*, …}
@@ -195,7 +195,7 @@ Wine.
 
 `BhPluginShadow` therefore gates on the installed plugin's `versionCode` (read
 from the host's own identity record) matching
-`EXPECTED_PLUGIN_VERSION_CODE` (102 for the 6.1.2-era plugin). On a mismatch it
+`EXPECTED_PLUGIN_VERSION_CODE` (103 for the 6.2.0-era plugin). On a mismatch it
 returns the dexPath unchanged:
 dual-motor turns **off**, the engine keeps working. Degraded, never broken.
 
@@ -235,8 +235,9 @@ only rumble half that survives a mismatch.
 `apply_plugin_rumble_patches.py`, `apply_plugin_privacy_patches.py` and
 `build_plugin_shadow_dex.py` is derived from the plugin tree rather than pinned to
 an R8 letter, because *every* letter drifted between plugin 101 and 102 (Physical
-`fi3`→`ji3`, perf uploader `mv1`→`qv1`, its result `jv1`→`nv1`, heartbeat bridge
-`jg4`→`kg4`, and all three heartbeat call sites). Re-running the three scripts
+`fi3`→`ji3`→`ds3`, perf uploader `mv1`→`qv1`→`b12`, heartbeat bridge
+`jg4`→`kg4`→`gs4`, and all three heartbeat call sites every time). Re-running the
+three scripts
 against a new plugin and bumping `EXPECTED_PLUGIN_VERSION_CODE` should be the
 whole job.
 
