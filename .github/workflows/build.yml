@@ -217,7 +217,7 @@ jobs:
           # reads it to know which classes to compare against the installed
           # plugin. Without it the probe cannot verify anything and refuses,
           # which silently costs dual-motor AND the plugin-side privacy kills.
-          ls -l apktool_out/assets/bh_pcengine_shadow.dex \n                apktool_out/assets/bh_pcengine_shadow.classes
+          ls -l apktool_out/assets/bh_pcengine_shadow.dex apktool_out/assets/bh_pcengine_shadow.classes
 
       - name: Rebuild and sign
         run: |
