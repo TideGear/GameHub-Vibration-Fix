@@ -21,8 +21,10 @@ also includes my own PC-accurate controller vibration fixes.
 > **The plugin contract has bumped on every base**: `schemaVersion` 2 (6.1.1), 3
 > (6.1.2), 4 (6.2.0), 5 (6.2.1). The host refuses anything else outright and
 > downloads a replacement. The shadow is cut against **plugin 104**
-> (`versionName 104-5`), verified on device:
-> `dual-motor ACTIVE — shadowing PC engine plugin v104`.
+> (`versionName 104-5`), verified on device: `dual-motor ACTIVE — shadowing PC
+> engine plugin v104`, plus a real 62 s session with **zero** `heartbeat/game`
+> POSTs and `uploadedBatches=0` for the device-perf telemetry (the summary is
+> still computed locally — 5 samples, 58 fps — it just never leaves the device).
 >
 > **A stale shadow is no longer automatically fatal.** Since the runtime
 > compatibility probe landed, a plugin that does not match
