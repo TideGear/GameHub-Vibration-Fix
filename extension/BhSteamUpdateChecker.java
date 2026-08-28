@@ -137,7 +137,7 @@ public final class BhSteamUpdateChecker {
     // (Lvi0;->j(IZLContinuationImpl;) on both 6.1.1 and 6.1.2) and that the
     // block calls two letter-methods mirroring 6.1.1's Ljao;->x + Lm43;->o
     // (6.1.2: Lqao;->x + Ll43;->o).
-    private static final String CHECK_BLOCK_CLASS      = "bna";   // 6.1.2 t0a, 6.1.1 o0a
+    private static final String CHECK_BLOCK_CLASS      = "kna";   // 6.2.0 bna, 6.1.2 t0a
     // The block passes this flag STRAIGHT THROUGH (no `xor 1` as on 6.0.9's
     // wke) — re-verified on 6.1.2 at the Lvi0;->j construction site.
     // In Lwvo;->w it selects the throttled variant: TRUE = respect the host's

@@ -84,7 +84,7 @@ from pathlib import Path
 # plugin host activity and the same smali layout. apktool.yml carries the
 # actual versionName, so report that and keep the probes for the *family*
 # decision (plugin-era vs base-APK-engine).
-SUPPORTED_BASES = ("6.1.1", "6.1.2", "6.2.0")
+SUPPORTED_BASES = ("6.1.1", "6.1.2", "6.2.0", "6.2.1")
 
 
 def apktool_version(root: Path):
