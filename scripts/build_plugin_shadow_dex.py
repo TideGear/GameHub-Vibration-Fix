@@ -27,6 +27,7 @@ apktool.jar defaults to $APKTOOL_JAR, else "apktool" on PATH is used via
 `apktool b`.
 """
 import os
+import pathlib
 import shutil
 import subprocess
 import sys
@@ -159,6 +160,28 @@ def main():
         out_dex.write_bytes(data)
         print(f"OK: wrote {out_dex} ({len(data)} bytes) containing "
               f"{staged} shadow class(es)")
+
+        # Companion manifest: the fully-qualified names of exactly the classes
+        # this dex shadows, one per line.
+        #
+        # BhPluginShadow's runtime compatibility probe reads it to know which
+        # classes to compare against the installed plugin. It has to come from
+        # the build rather than be hardcoded in Java, because the whole point of
+        # the probe is to judge a plugin the shadow was NOT cut against — at
+        # which point the only trustworthy source for "what do we override" is
+        # the shadow itself. A dex has no public class-enumeration API on
+        # Android, hence a side file.
+        manifest = out_dex.with_suffix(".classes")
+        fqns = sorted(
+            p.relative_to("smali").with_suffix("").as_posix().replace("/", ".")
+            for p in (pathlib.PurePosixPath(r) for r in
+                      (x.relative_to(plugin_dir).as_posix() for x in patched))
+        )
+        manifest.write_text("\n".join(fqns) + "\n", encoding="utf-8",
+                            newline="")
+        print(f"OK: wrote {manifest} listing {len(fqns)} class(es):")
+        for f in fqns:
+            print(f"      {f}")
     finally:
         shutil.rmtree(work, ignore_errors=True)
 

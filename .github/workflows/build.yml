@@ -43,12 +43,14 @@ jobs:
           # The plugin contract has bumped on EVERY base: schemaVersion 2 (6.1.1),
           # 3 (6.1.2), 4 (6.2.0), 5 (6.2.1). An older plugin is rejected outright.
           #
-          # !! 6.2.1 NEEDS A SCHEMA-5 PLUGIN, not yet pulled. This still points at
-          # 103 (schema 4), so the shadow gate refuses and the build ships with
-          # dual-motor OFF and the plugin-side privacy kills INERT. Pull the
-          # schema-5 plugin off a device running stock 6.2.1, upload it, re-run the
-          # three plugin scripts, and raise EXPECTED_PLUGIN_VERSION_CODE.
-          echo "plugin_tag=pcengine-plugin-103" >> "$GITHUB_OUTPUT"
+          # 6.2.1's schema-5 plugin is 104 (versionName 104-5).
+          #
+          # Since the runtime compat probe landed, a mismatch here is no longer
+          # automatically fatal: if a newer plugin leaves the four shadowed classes
+          # structurally identical, BhPluginShadow verifies that at load time and
+          # shadows anyway. It still pays to keep this current, because a plugin
+          # that DOES change them (as 103 -> 104 did) is correctly refused.
+          echo "plugin_tag=pcengine-plugin-104" >> "$GITHUB_OUTPUT"
           echo "Base version: 6.2.1"
 
       - name: Download original GameHub APK
@@ -210,7 +212,12 @@ jobs:
               $HOME/bin/apktool.jar
           # Base-APK side: route the plugin's dexPath through BhPluginShadow.
           python3 scripts/apply_plugin_shadow_patches.py apktool_out
-          ls -l apktool_out/assets/bh_pcengine_shadow.dex
+          # The .classes manifest is written next to the dex by the same
+          # script and MUST ship too: BhPluginShadow's runtime compat probe
+          # reads it to know which classes to compare against the installed
+          # plugin. Without it the probe cannot verify anything and refuses,
+          # which silently costs dual-motor AND the plugin-side privacy kills.
+          ls -l apktool_out/assets/bh_pcengine_shadow.dex \n                apktool_out/assets/bh_pcengine_shadow.classes
 
       - name: Rebuild and sign
         run: |

@@ -10,7 +10,7 @@ It is built on GameHub v6.x and heavily uses the work of
 [@The412Banner](https://github.com/The412Banner) as well as others. It
 also includes my own PC-accurate controller vibration fixes.
 
-> ### ⚠️ 6.2.1 — base APK ported and building; the plugin half needs a schema-5 plugin
+> ### 6.2.1 — everything working, pinned to PC-engine plugin 104
 >
 > GameHub **6.1.1 moved the PC/Wine engine out of the APK** into a
 > separately-downloaded plugin, which splits the vibration work in two. GameScrub
@@ -18,35 +18,24 @@ also includes my own PC-accurate controller vibration fixes.
 > small "shadow" dex to the plugin's `DexClassLoader` path — see
 > [PC engine plugin](#pc-engine-plugin-611).
 >
-> **The plugin contract has bumped on every single base**: `schemaVersion` 2
-> (6.1.1), 3 (6.1.2), 4 (6.2.0), **5 (6.2.1, versionCode 138)**. The host rejects
-> anything else outright — *"PC engine plugin schema N is not supported"* — and
-> downloads a replacement. The schema-5 plugin has not been pulled yet, so this
-> build still ships the plugin-103 shadow, which the version gate correctly
-> refuses.
+> **The plugin contract has bumped on every base**: `schemaVersion` 2 (6.1.1), 3
+> (6.1.2), 4 (6.2.0), 5 (6.2.1). The host refuses anything else outright and
+> downloads a replacement. The shadow is cut against **plugin 104**
+> (`versionName 104-5`), verified on device:
+> `dual-motor ACTIVE — shadowing PC engine plugin v104`.
 >
-> | | 6.2.1 |
-> |---|---|
-> | Privacy (base APK): Firebase, GMS Measurement, Mob Push, OEM push fleet, `/events`, heartbeat/playtime, OTA | **working** |
-> | Sustained rumble past 1 s | **working** — `winebus.so` stayed in the Wine component tree |
-> | Layout export + import | **working** |
-> | "Online Update" badges | **working** |
-> | Dual-motor low/high dispatch | **off** until the schema-5 plugin is pulled |
-> | Plugin-side privacy: heartbeat (Steam ID64 every 30 s) + device-perf telemetry | **off — those trackers are live again** |
->
-> That last row is the one to care about: the dual-motor hooks and the
-> plugin-side privacy stubs ride the **same** shadow dex, so a refused shadow
-> disables both. The refusal is deliberate and loud (Toast + settings banner +
-> logcat) — see
+> **A stale shadow is no longer automatically fatal.** Since the runtime
+> compatibility probe landed, a plugin that does not match
+> `EXPECTED_PLUGIN_VERSION_CODE` is no longer refused on the version number alone.
+> GameScrub loads the plugin in a throwaway classloader and checks whether the
+> four classes the shadow overrides still have the same constructors, methods,
+> fields, superclass and interfaces. If they do, it shadows anyway and says so; if
+> they do not, it refuses and names the difference. See
 > [What happens when the plugin updates](#what-happens-when-the-plugin-updates).
 >
-> **To finish:** pull
-> `<filesDir>/plugins/com.xiaoji.egggame.plugin.pcengine/base.apk` from a device
-> running stock 6.2.1, upload it as a `pcengine-plugin-<versionCode>` release
-> asset, re-run `apply_plugin_rumble_patches.py` +
-> `apply_plugin_privacy_patches.py` + `build_plugin_shadow_dex.py` against it, and
-> raise `EXPECTED_PLUGIN_VERSION_CODE` in
-> [BhPluginShadow](extension/BhPluginShadow.java).
+> That matters because a refused shadow is also a **privacy regression** — the
+> same dex carries the plugin-side stubs for the playtime heartbeat (your Steam
+> ID64, every 30 s) and the device-perf telemetry.
 
 What you get over stock GameHub:
 
@@ -69,7 +58,7 @@ What you get over stock GameHub:
   old endpoint is off and this replaced it). GameScrub stubs the uploader
   through the same shadow dex used for dual-motor, so the plugin APK is never
   modified. The uploader's class letter drifts every plugin build
-  (101 `Lxjp/mv1;` → 102 `Lxjp/qv1;` → 103 `Lxjp/b12;`), so the script locates it by its
+  (101 `Lxjp/mv1;` → 102 `Lxjp/qv1;` → 103/104 `Lxjp/b12;`), so the script locates it by its
   upload/retry method pair rather than by name. Sampling and local summary storage still run;
   nothing is sent.
 - **Dual-motor low/high dispatch.**
@@ -238,6 +227,40 @@ dual-motor, because that is the user-visible symptom; this is the part that isn'
 **Sustained rumble is immune to plugin updates** — it patches the Wine component
 tree, not the plugin, and its trigger doesn't touch plugin internals. It is the
 only rumble half that survives a mismatch.
+
+**The version pin is now a fast path, not the only gate.** If the installed
+plugin's `versionCode` equals `EXPECTED_PLUGIN_VERSION_CODE` the shadow is used
+with no further checking — it is by definition the build it was cut from.
+Otherwise GameScrub runs a **runtime compatibility probe** before deciding:
+
+- it opens the installed plugin in a throwaway `DexClassLoader`, and our shadow in
+  another one configured exactly as production will be (shadow first, plugin
+  behind it — in isolation the shadow's four classes cannot even link, since their
+  superclasses and parameter types are plugin-internal letters);
+- for each class named in `assets/bh_pcengine_shadow.classes` (written by
+  `build_plugin_shadow_dex.py`) it compares declared constructors, methods,
+  fields, superclass and interfaces;
+- equality is required in **both** directions. A member the plugin lost means our
+  copy references something gone; a member the plugin *gained* is just as fatal,
+  because the shadow replaces the class wholesale and any caller of the new member
+  would hit our older copy.
+
+Measured at ~110 ms, and the verdict is cached keyed by (probe revision, shadow
+fingerprint, plugin SHA-256) so it runs once per combination rather than per
+launch. All three parts of that key were needed: leaving the shadow out meant a
+GameScrub update shipping a rebuilt shadow kept being told "incompatible" by the
+verdict cached for the previous one.
+
+Worked example, plugin 103 -> 104:
+
+```
+compat probe: xjp.b12 differs — plugin lacks [#a:xjp.gs4, <init>[xjp.gs4, …]];
+                                plugin adds  [#a:xjp.ls4, <init>[xjp.ls4, …]]
+```
+
+The perf uploader's field and constructor reference the heartbeat bridge, whose
+letter moved `gs4` -> `ls4`. Correctly refused, and it says why — rather than just
+reporting that a version number changed.
 
 **Re-pinning is cheap by design.** Every anchor in
 `apply_plugin_rumble_patches.py`, `apply_plugin_privacy_patches.py` and
